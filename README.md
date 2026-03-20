@@ -1,64 +1,58 @@
-# 🏥 Health-Resilient Agent (POC 4)
+# 🎯 Gerador de Desafios de Retenção (POC 4 - IA como Pool)
 
 **Disciplina:** Engenharia de Sistemas Distribuídos – 2025.2 (UFPB) 
 **Equipe:** 
 
 Ana Gabriela, André Soares, Bertrand Lira, Guilherme Muniz, Felipe Lima, Mateus Freitas.
 
-
-**POC Selecionada:** 4 - IA como Pool (Não Dependência Síncrona) 
-
 ---
 
 ## 📋 Visão Geral
-Este projeto consiste em um assistente inteligente de triagem de saúde e direcionamento para unidades de atendimento (UPAs/SAMU). O diferencial arquitetural é o foco em **resiliência crítica**: o sistema garante que orientações de emergência permaneçam acessíveis mesmo se o provedor de IA (OpenAI) estiver offline.
+Este projeto consiste em um motor de retenção focado em geração de desafios e perguntas sobre conteúdos de vídeos de anunciantes. O diferencial arquitetural é provar que a geração de desafios por Inteligência Artificial pode ser desacoplada do fluxo crítico do usuário. A IA opera alimentando um pool assíncrono e, caso a geração em tempo real falhe ou o pool esgote, o sistema utiliza um banco de dados estático como fallback, garantindo resiliência e disponibilidade contínua.
 
 ### Funcionalidades Principais
-* **Triagem de Sintomas:** Processamento via GPT-4o-mini.
-* **IA como Pool:** Respostas frequentes são pré-geradas e cacheadas no Redis para latência mínima.
-* **Fallback de Segurança:** Em caso de falha na IA, o sistema exibe automaticamente dados de um banco estático de unidades de saúde.
+* **Geração Assíncrona:** Um worker gera continuamente perguntas sobre os vídeos usando o modelo deployado e as armazena no pool.
+* **Consumo em Tempo Real e Busca Semântica:** O motor consome os desafios do pool. Para perguntas repetitivas ou vídeos similares, utiliza busca vetorial por similaridade.
+* **Fallback de Segurança:** Se o pool esgotar ou a IA ficar indisponível, o motor faz o fallback para perguntas pré-aprovadas no banco estático.
 
 ---
 
-## 🏗️ Arquitetura (Diagrama C4 - Nível 2)
-O sistema é composto pelos seguintes containers:
-1. **Web App (Next.js):** Interface do usuário e lógica de API Routes.
-2. **Health Pool (Redis):** Armazenamento do pool de respostas e cache-aside.
-3. **Safety Storage (JSON):** Base de dados estática de contingência para fallbacks.
-4. **AI Gateway (OpenAI API):** Provedor de inteligência assíncrona.
+## 🏗️ Arquitetura (Diagrama C4)
+
+LINKAR O DIAGRAMA NA PASTA
 
 ---
 
 ## 📜 ADRs (Architecture Decision Records)
 
-### ADR 01: Implementação de Circuit Breaker para Resiliência
-* **Contexto:** A dependência síncrona de APIs de IA pode causar indisponibilidade em momentos críticos de saúde.
-* **Decisão:** Implementar o padrão **Circuit Breaker**. Se a API de IA falhar ou demorar > 5s, o sistema serve dados do *Safety Storage*.
-* **Consequência:** Alta disponibilidade para informações vitais (telefones e endereços de UPAs).
+### ADR 01: Desacoplamento da Geração de IA via Pool Assíncrono
+* **Contexto:** A geração de perguntas por IA tem alta latência (segundos) e depender dela de forma síncrona degradaria a experiência do usuário (retenção exige rapidez).
+* **Decisão:** A IA não será chamada na hora em que o usuário abre o vídeo. A API (Fargate) consumirá perguntas pré-geradas de um pool no banco de dados (pg_vector). O cluster EC2 (GPU) trabalhará de forma assíncrona apenas para manter o pool cheio.
+* **Consequência:** Latência mínima para o usuário. Maior complexidade em gerenciar o tamanho do pool e métricas de refresh.
 
-### ADR 02: Estratégia de Pool com Cache-Aside (Redis)
-* **Contexto:** Necessidade de reduzir custos e tempo de resposta para perguntas comuns.
-* **Decisão:** Utilizar **Redis** para manter um pool de respostas para sintomas recorrentes.
-* **Consequência:** Respostas instantâneas e economia de tokens.
+### ADR 02: Fallback Estático e Circuit Breaker
+* **Contexto:** Instâncias EC2 com GPU podem falhar, escalar lentamente ou o pool pode secar se o vídeo viralizar de repente.
+* **Decisão:** Implementar padrão Circuit Breaker no consumo do pool. Se o pool vetorial estiver vazio ou a API da IA estiver fora, o motor puxa automaticamente perguntas genéricas do banco relacional tradicional (Amazon RDS).
+* **Consequência:** O sistema nunca para de exibir desafios (alta disponibilidade do negócio), mas os desafios de fallback podem ser menos personalizados em caso de crise.
 
 ---
 
 ## 🛠️ Padrões Arquiteturais Aplicados 
-1. **Circuit Breaker:** Proteção contra falhas em serviços externos.
-2. **Cache-Aside:** Gerenciamento do pool de dados no Redis.
-3. **Bulkhead:** Isolamento entre a lógica de IA e o fluxo de informações estáticas.
+1. **ASYNC Geração / SYNC Consumo:** Separação clara entre a esteira pesada de IA (assíncrona) e a entrega para o usuário (síncrona).
+2. **Circuit Breaker & Fallback:** Proteção do fluxo crítico do usuário contra falhas do cluster de GPU ou exaustão do pool, acionando o banco RDS estático.
+3. **Cache-Aside / Vector Search:** O motor primeiro busca no pg_vector por similaridade (cache de contexto). Se não achar, agenda a criação
 4. **Retry Pattern:** Tentativas de reconexão automática em falhas transientes.
 
 ---
 
 ## 💻Stack Tecnológica e Justificativas
-1. Computação da API (Motor): AWS Fargate (Serverless). Justificativa: Garante que a API do fluxo crítico do usuário escale instantaneamente em caso de surtos de acessos (ex: picos de viroses na cidade), sem precisarmos gerenciar a infraestrutura subjacente.
+1. **Computação da API (Motor): AWS Fargate (Serverless).** Justificativa: Permite focar na lógica do motor de consumo sem gerenciar servidores, escalando rapidamente em picos de acessos de usuários assistindo aos vídeos.
 
 2. Modelo de IA: EC2 Autoscaling Group (Instâncias com GPU). Justificativa: Modelos LLM exigem aceleração por hardware (GPU). O Autoscaling permite que as instâncias liguem apenas quando a fila de novos sintomas crescer, otimizando o alto custo financeiro de instâncias com GPU.
 
-3. Banco de Dados Relacional e Fallback: Amazon RDS. Justificativa: Oferece transações ACID e alta confiabilidade para armazenar as localizações geográficas e contatos das unidades de saúde (dados imutáveis de contingência).
+3. Banco de Dados Relacional e Fallback: Amazon RDS. Justificativa: Garante integridade transacional para os dados estáticos de fallback e configurações dos anunciantes com alta disponibilidade.
 
-4. Cache Inteligente: pg_vector (Busca de Similaridade). Justificativa: Pacientes descrevem dores de formas diferentes ("dor de cabeça forte" vs "enxaqueca intensa"). O pg_vector encontra a similaridade semântica para perguntas repetitivas, aproveitando respostas do pool sem precisar acionar o modelo na EC2.
+4. Cache Inteligente: pg_vector (Busca de Similaridade). Justificativa: Substitui abordagens tradicionais de cache exato. Como as perguntas podem ter variações semânticas, o pg_vector permite recuperar desafios previamente gerados para contextos similares, poupando chamadas caras ao cluster de GPU.
 
 ---
 
