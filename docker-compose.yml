@@ -1,0 +1,37 @@
+---
+
+### 2. docker-compose.yml
+
+Este arquivo configura o ambiente com a aplicação Next.js e um container Redis para o **Pool** exigido na POC[cite: 40, 92].
+
+```yaml
+version: '3.8'
+
+services:
+  # Aplicação Principal (Next.js)
+  app:
+    build: .
+    container_name: health-resilient-agent
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - REDIS_URL=redis://cache:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - cache
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+  # Pool de Dados (Redis) - Requisito da POC 4
+  cache:
+    image: redis:alpine
+    container_name: health-pool-cache
+    ports:
+      - "6379:6379"
+    restart: always
+
+networks:
+  default:
+    driver: bridge
