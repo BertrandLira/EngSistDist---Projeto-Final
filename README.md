@@ -56,6 +56,20 @@ LINKAR O DIAGRAMA NA PASTA
 
 ---
 
+## 🏗️ Divisão de Responsabilidades
+Para garantir o domínio de todos os tópicos técnicos exigidos e a participação equitativa no videocast, a equipe foi dividida conforme as camadas da arquitetura distribuída:
+
+| Integrante | Papel Técnico | Atribuição Principal (Inicialmente) |
+| :--- | :--- | :--- |
+| **Mateus Freitas** | **Backend Lead** | Criar a API e a lógica de Fallback  |
+| **Bertrand Lira** | **IA Engineer** | Conectar o sistema com o GPT para gerar desafios. |
+| **Felipe Lima** | **Data Engineer** | Cuidar do banco SQL e do Cache Redis. |
+| **Guilherme Muniz** | **Middleware Eng** |Configurar as filas do RabbitMQ. |
+| **André Soares** | **DevOps / SRE** | Fazer o Docker Compose e o setup do ambiente. |
+| **Ana Gabriela Maia** | **QA / Resiliency** | Plano de testes de carga, simulação de falhas de IA e validação do Circuit Breaker. |
+
+---
+
 ## 🚀 Como Executar
 1. Clone o repositório.
 2. Crie um arquivo `.env` com sua `OPENAI_API_KEY`.
