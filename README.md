@@ -51,6 +51,17 @@ O sistema é composto pelos seguintes containers:
 
 ---
 
+## 💻Stack Tecnológica e Justificativas
+1. Computação da API (Motor): AWS Fargate (Serverless). Justificativa: Garante que a API do fluxo crítico do usuário escale instantaneamente em caso de surtos de acessos (ex: picos de viroses na cidade), sem precisarmos gerenciar a infraestrutura subjacente.
+
+2. Modelo de IA: EC2 Autoscaling Group (Instâncias com GPU). Justificativa: Modelos LLM exigem aceleração por hardware (GPU). O Autoscaling permite que as instâncias liguem apenas quando a fila de novos sintomas crescer, otimizando o alto custo financeiro de instâncias com GPU.
+
+3. Banco de Dados Relacional e Fallback: Amazon RDS. Justificativa: Oferece transações ACID e alta confiabilidade para armazenar as localizações geográficas e contatos das unidades de saúde (dados imutáveis de contingência).
+
+4. Cache Inteligente: pg_vector (Busca de Similaridade). Justificativa: Pacientes descrevem dores de formas diferentes ("dor de cabeça forte" vs "enxaqueca intensa"). O pg_vector encontra a similaridade semântica para perguntas repetitivas, aproveitando respostas do pool sem precisar acionar o modelo na EC2.
+
+---
+
 ## 🚀 Como Executar
 1. Clone o repositório.
 2. Crie um arquivo `.env` com sua `OPENAI_API_KEY`.
