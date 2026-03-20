@@ -19,7 +19,9 @@ Este projeto consiste em um motor de retenção focado em geração de desafios 
 
 ## 🏗️ Arquitetura (Diagrama C4)
 
-LINKAR O DIAGRAMA NA PASTA
+[Diagrama Nível 1](Diagrams\DiagramaC4N1.pdf)
+
+[Diagrama Nível 2](Diagrams\DiagramaC4N2.pdf)
 
 ---
 
