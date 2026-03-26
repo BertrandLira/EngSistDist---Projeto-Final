@@ -77,4 +77,4 @@ Para garantir o domínio de todos os tópicos técnicos exigidos e a participaç
 2. Crie um arquivo `.env` com sua `OPENAI_API_KEY`.
 3. Execute o comando:
    ```bash
-   docker-compose up --build
+   docker-compose up --build -d
