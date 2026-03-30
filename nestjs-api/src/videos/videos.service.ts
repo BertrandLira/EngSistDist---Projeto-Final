@@ -1,27 +1,23 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
 import { randomUUID } from "crypto";
 import { createReadStream, promises as fs } from "fs";
 import { join } from "path";
 import type { Response } from "express";
-
-export interface VideoRecord {
-  id: string;
-  storedFilename: string;
-  originalName: string;
-  mimeType: string;
-  createdAt: string;
-  transcript?: string;
-  relativePath: string;
-}
+import { Video } from "../database/entities/video.entity";
 
 @Injectable()
 export class VideosService {
   private readonly uploadDir: string;
   private readonly workerUrl: string;
-  private readonly records = new Map<string, VideoRecord>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @InjectRepository(Video)
+    private readonly videoRepo: Repository<Video>,
+  ) {
     this.uploadDir =
       this.config.get<string>("UPLOAD_DIR") ?? join(process.cwd(), "uploads");
     this.workerUrl =
@@ -34,7 +30,7 @@ export class VideosService {
 
   async saveUploadedFile(
     file: Express.Multer.File,
-  ): Promise<{ record: VideoRecord }> {
+  ): Promise<{ record: Video }> {
     await this.ensureUploadDir();
     const id = randomUUID();
     const ext = this.extensionFromOriginal(file.originalname);
@@ -42,38 +38,33 @@ export class VideosService {
     const dest = join(this.uploadDir, storedFilename);
     await fs.writeFile(dest, file.buffer);
 
-    const relativePath = storedFilename;
-    const record: VideoRecord = {
+    const record = this.videoRepo.create({
       id,
-      storedFilename,
       originalName: file.originalname,
       mimeType: file.mimetype || "video/mp4",
-      createdAt: new Date().toISOString(),
-      relativePath,
-    };
-    this.records.set(id, record);
+      relativePath: storedFilename,
+    });
+    await this.videoRepo.save(record);
 
     void this.enqueueTranscribe(record).catch(() => undefined);
 
     return { record };
   }
 
-  listVideos(): VideoRecord[] {
-    return [...this.records.values()].sort(
-      (a, b) => b.createdAt.localeCompare(a.createdAt),
-    );
+  async listVideos(): Promise<Video[]> {
+    return this.videoRepo.find({ order: { createdAt: "DESC" } });
   }
 
-  getRecord(id: string): VideoRecord {
-    const record = this.records.get(id);
+  async getRecord(id: string): Promise<Video> {
+    const record = await this.videoRepo.findOne({ where: { id } });
     if (!record) {
       throw new NotFoundException(`Video ${id} not found`);
     }
     return record;
   }
 
-  absolutePath(record: VideoRecord): string {
-    return join(this.uploadDir, record.storedFilename);
+  absolutePath(record: Video): string {
+    return join(this.uploadDir, record.relativePath);
   }
 
   async streamVideo(
@@ -81,7 +72,7 @@ export class VideosService {
     rangeHeader: string | undefined,
     res: Response,
   ): Promise<void> {
-    const record = this.getRecord(id);
+    const record = await this.getRecord(id);
     const path = this.absolutePath(record);
     let stat;
     try {
@@ -126,7 +117,7 @@ export class VideosService {
   }
 
   async requestChallenges(videoId: string): Promise<unknown> {
-    const record = this.getRecord(videoId);
+    const record = await this.getRecord(videoId);
     const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/questions`;
     const res = await fetch(url, {
       method: "POST",
@@ -150,7 +141,7 @@ export class VideosService {
     return ".mp4";
   }
 
-  private async enqueueTranscribe(record: VideoRecord): Promise<void> {
+  private async enqueueTranscribe(record: Video): Promise<void> {
     const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/transcribe`;
     const res = await fetch(url, {
       method: "POST",
@@ -166,7 +157,7 @@ export class VideosService {
     const body = (await res.json()) as { transcript?: string };
     if (body.transcript) {
       record.transcript = body.transcript;
-      this.records.set(record.id, record);
+      await this.videoRepo.save(record);
     }
   }
 }

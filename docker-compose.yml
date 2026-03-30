@@ -51,7 +51,11 @@ services:
       - video_data:/app/media
     environment:
       - MEDIA_ROOT=/app/media
+      - DATABASE_URL=postgresql://user:pass@db:5432/db
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-}
     depends_on:
       - db
 
@@ -60,6 +64,9 @@ services:
     container_name: postgres_db
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./nestjs-api/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     environment:
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=pass
@@ -73,3 +80,4 @@ services:
 
 volumes:
   video_data:
+  pgdata:
