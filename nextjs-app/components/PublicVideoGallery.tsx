@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { publicApiUrl } from "@/lib/api";
+import { ChallengeCard, type Question } from "./ChallengeCard";
 
 export type VideoListItem = {
   id: string;
@@ -10,31 +11,52 @@ export type VideoListItem = {
   hasTranscript: boolean;
 };
 
+type ChallengeState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ok"; questions: Question[]; provider?: string };
+
 export function PublicVideoGallery({ videos }: { videos: VideoListItem[] }) {
-  const [challengeLog, setChallengeLog] = useState<Record<string, string>>({});
+  const [challenges, setChallenges] = useState<Record<string, ChallengeState>>(
+    {},
+  );
 
   const onPlay = useCallback(async (id: string) => {
-    setChallengeLog((prev) => ({ ...prev, [id]: "Solicitando perguntas…" }));
+    // Evita chamar duas vezes
+    setChallenges((prev) => {
+      if (prev[id]?.status === "ok" || prev[id]?.status === "loading")
+        return prev;
+      return { ...prev, [id]: { status: "loading" } };
+    });
+
     try {
       const res = await fetch(`${publicApiUrl()}/videos/${id}/challenges`, {
         method: "POST",
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setChallengeLog((prev) => ({
+        setChallenges((prev) => ({
           ...prev,
-          [id]: `Erro: ${res.status} ${JSON.stringify(data)}`,
+          [id]: {
+            status: "error",
+            message: data.message ?? `Erro ${res.status}`,
+          },
         }));
         return;
       }
-      setChallengeLog((prev) => ({
+      setChallenges((prev) => ({
         ...prev,
-        [id]: `OK: ${JSON.stringify(data)}`,
+        [id]: {
+          status: "ok",
+          questions: data.questions ?? [],
+          provider: data.provider,
+        },
       }));
     } catch {
-      setChallengeLog((prev) => ({
+      setChallenges((prev) => ({
         ...prev,
-        [id]: "Falha de rede ao chamar /challenges",
+        [id]: { status: "error", message: "Falha de rede" },
       }));
     }
   }, []);
@@ -49,30 +71,52 @@ export function PublicVideoGallery({ videos }: { videos: VideoListItem[] }) {
 
   return (
     <ul className="flex flex-col gap-8">
-      {videos.map((v) => (
-        <li
-          key={v.id}
-          className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-        >
-          <p className="mb-2 text-sm font-medium text-zinc-900 dark:text-zinc-50">
-            {v.originalName}
-          </p>
-          <p className="mb-3 text-xs text-zinc-500">
-            {v.id} · transcript: {v.hasTranscript ? "sim" : "não"}
-          </p>
-          <video
-            controls
-            className="aspect-video w-full max-w-2xl rounded-md bg-black"
-            src={`${publicApiUrl()}/videos/${v.id}/stream`}
-            onPlay={() => onPlay(v.id)}
-          />
-          {challengeLog[v.id] ? (
-            <pre className="mt-2 max-w-2xl overflow-x-auto rounded bg-zinc-100 p-2 text-xs text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
-              {challengeLog[v.id]}
-            </pre>
-          ) : null}
-        </li>
-      ))}
+      {videos.map((v) => {
+        const state = challenges[v.id] ?? { status: "idle" };
+        return (
+          <li
+            key={v.id}
+            className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+          >
+            <p className="mb-2 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+              {v.originalName}
+            </p>
+            <p className="mb-3 text-xs text-zinc-500">
+              {v.id} · transcript: {v.hasTranscript ? "sim" : "não"}
+            </p>
+            <video
+              controls
+              className="aspect-video w-full max-w-2xl rounded-md bg-black"
+              src={`${publicApiUrl()}/videos/${v.id}/stream`}
+              onPlay={() => onPlay(v.id)}
+            />
+
+            {/* Challenge display */}
+            {state.status === "loading" && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-zinc-500">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-blue-500" />
+                Gerando desafios…
+              </div>
+            )}
+            {state.status === "error" && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+                {state.message}
+              </div>
+            )}
+            {state.status === "ok" && state.questions.length > 0 && (
+              <ChallengeCard
+                questions={state.questions}
+                provider={state.provider}
+              />
+            )}
+            {state.status === "ok" && state.questions.length === 0 && (
+              <p className="mt-4 text-sm text-zinc-400">
+                Nenhum desafio gerado para este vídeo.
+              </p>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
