@@ -73,8 +73,131 @@ Para garantir o domínio de todos os tópicos técnicos exigidos e a participaç
 ---
 
 ## 🚀 Como Executar
-1. Clone o repositório.
-2. Crie um arquivo `.env` com sua `OPENAI_API_KEY`.
-3. Execute o comando:
-   ```bash
-   docker-compose up --build -d
+
+### Pré-requisitos
+
+- Docker e Docker Compose instalados
+- Arquivo `.env` na raiz do projeto (veja `.env.example`)
+
+```env
+# Provedor de IA: "gemini" ou "openai"
+AI_PROVIDER=gemini
+GEMINI_API_KEY=sua-chave-aqui
+GEMINI_MODEL=gemini-1.5-flash
+
+# Ou, para OpenAI:
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=sua-chave-aqui
+```
+
+### Passo 1 — Subir infraestrutura e preparar banco
+
+```bash
+# Sobe banco e cache em background
+docker compose up db cache -d
+
+# Aguarda o postgres inicializar (~3s) e cria as tabelas
+docker cp nestjs-api/prisma/migrations/20250330000000_init/migration.sql postgres_db:/tmp/migration.sql
+docker exec postgres_db psql -U user -d db -f /tmp/migration.sql
+
+# Insere as 8 perguntas estáticas de fallback
+docker cp nestjs-api/prisma/seed.sql postgres_db:/tmp/seed.sql 2>/dev/null || \
+docker exec postgres_db psql -U user -d db -c "
+INSERT INTO \"StaticQuestion\" (id,question,options,answer,category) VALUES
+('sq-1','Qual das alternativas melhor descreve o tema central do vídeo?','[\"Inovação tecnológica\",\"História e cultura\",\"Saúde e bem-estar\",\"Finanças pessoais\"]','Inovação tecnológica','general'),
+('sq-2','O que você aprendeu de mais relevante neste conteúdo?','[\"Uma nova perspectiva sobre o tema\",\"Dados e estatísticas atualizados\",\"Técnicas práticas aplicáveis\",\"Contexto histórico do assunto\"]','Técnicas práticas aplicáveis','general'),
+('sq-3','Como o apresentador estruturou a argumentação principal?','[\"Problema → Solução → Resultado\",\"Histórico → Presente → Futuro\",\"Teoria → Prática → Conclusão\",\"Dados → Análise → Recomendação\"]','Problema → Solução → Resultado','structure'),
+('sq-4','Qual é a principal mensagem que o vídeo tenta transmitir?','[\"A importância da educação continuada\",\"O impacto das novas tecnologias\",\"A necessidade de mudança de comportamento\",\"A relevância da colaboração\"]','A importância da educação continuada','comprehension'),
+('sq-5','Que evidência o autor usa para sustentar seu argumento?','[\"Estudos de caso e exemplos reais\",\"Pesquisas acadêmicas citadas\",\"Comparações históricas\",\"Testemunhos de especialistas\"]','Estudos de caso e exemplos reais','analysis'),
+('sq-6','Qual conceito apresentado no vídeo você considerou mais desafiador?','[\"A definição técnica do tema\",\"As implicações práticas\",\"A relação com outros conceitos\",\"O contexto em que se aplica\"]','As implicações práticas','reflection'),
+('sq-7','De que forma o conteúdo do vídeo pode ser aplicado no dia a dia?','[\"Melhorando hábitos de estudo\",\"Otimizando processos de trabalho\",\"Aprimorando relações interpessoais\",\"Desenvolvendo habilidades técnicas\"]','Otimizando processos de trabalho','application'),
+('sq-8','Qual foi o momento mais impactante do vídeo?','[\"A revelação de um dado surpreendente\",\"A demonstração prática do conceito\",\"A conclusão e chamada à ação\",\"A apresentação do problema central\"]','A demonstração prática do conceito','engagement')
+ON CONFLICT DO NOTHING;"
+```
+
+### Passo 2 — Subir todos os serviços
+
+```bash
+docker compose up --build -d
+```
+
+Aguarde ~15s até os serviços inicializarem. Verifique com:
+
+```bash
+curl http://localhost:4000/health   # {"status":"ok"}
+curl http://localhost:8000/api/v1/health  # {"status":"ok"}
+```
+
+### Passo 3 — Testar o fluxo completo
+
+```bash
+# 1. Upload de vídeo
+curl -X POST http://localhost:4000/videos/upload \
+  -F "file=@algum-video.mp4"
+# Salve o "id" retornado:
+VIDEO_ID="<id-retornado>"
+
+# 2. Empurrar perguntas no pool
+curl -X POST http://localhost:4000/challenges/$VIDEO_ID/questions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "questions": [
+      {"question": "O que é X?", "options": ["A","B","C","D"], "answer": "A"},
+      {"question": "Como funciona Y?", "options": ["W","X","Y","Z"], "answer": "W"}
+    ]
+  }'
+
+# 3. Consumir do pool Redis (Camada 1)
+curl http://localhost:4000/challenges/$VIDEO_ID
+# Retorno esperado → "source": "pool"
+
+# 4. Consumir novamente com pool vazio (Camada 3 — fallback estático)
+curl http://localhost:4000/challenges/$VIDEO_ID
+curl http://localhost:4000/challenges/$VIDEO_ID
+curl http://localhost:4000/challenges/$VIDEO_ID
+# Retorno esperado → "source": "static"
+
+# 5. Ver tamanho do pool
+curl http://localhost:4000/challenges/$VIDEO_ID/pool-size
+```
+
+### Serviços e portas
+
+| Serviço | URL |
+| :--- | :--- |
+| Frontend (Next.js) | http://localhost:3000 |
+| API (NestJS) | http://localhost:4000 |
+| Worker IA (FastAPI) | http://localhost:8000 |
+| PostgreSQL | localhost:5432 |
+| Redis | localhost:6379 |
+
+---
+
+## 🧪 Testes
+
+Os testes unitários rodam em Docker, sem necessidade de banco de dados ou Redis.
+
+### Rodar testes com cobertura
+
+```bash
+docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+```
+
+O `--build` pode ser omitido nas execuções seguintes se o código não foi alterado:
+
+```bash
+docker compose -f docker-compose.test.yml up --abort-on-container-exit
+```
+
+O container exibe o relatório de cobertura no terminal e encerra automaticamente. O exit code reflete o resultado: `0` para tudo verde, `1` para falhas.
+
+### Suítes existentes
+
+| Arquivo | O que testa |
+| :--- | :--- |
+| `challenges.service.spec.ts` | Circuit breaker (pool Redis → banco vetorial → fallback estático) |
+| `challenges.controller.spec.ts` | Endpoints de desafios |
+| `pool.service.spec.ts` | Gestão da fila Redis por vídeo |
+| `prisma.service.spec.ts` | Ciclo de vida da conexão com o banco |
+| `videos.service.spec.ts` | Upload, listagem e busca de vídeos |
+| `app.controller.spec.ts` | Health check da aplicação |

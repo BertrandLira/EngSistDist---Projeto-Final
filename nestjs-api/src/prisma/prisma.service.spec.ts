@@ -16,13 +16,13 @@ describe('PrismaService', () => {
   });
 
   it('should call $connect on onModuleInit', async () => {
-    const spy = jest.spyOn(service, '$connect').mockResolvedValue();
+    const spy = jest.spyOn(service, '$connect').mockResolvedValue(undefined);
     await service.onModuleInit();
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('should call $disconnect on onModuleDestroy', async () => {
-    const spy = jest.spyOn(service, '$disconnect').mockResolvedValue();
+    const spy = jest.spyOn(service, '$disconnect').mockResolvedValue(undefined);
     await service.onModuleDestroy();
     expect(spy).toHaveBeenCalledTimes(1);
   });

@@ -51,7 +51,11 @@ services:
       - video_data:/app/media
     environment:
       - MEDIA_ROOT=/app/media
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-flash}
     depends_on:
       - db
 

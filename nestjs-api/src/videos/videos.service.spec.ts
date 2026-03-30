@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 // ---- Mock do módulo fs ----------------------------------------------------
 jest.mock('fs', () => ({
+  ...jest.requireActual('fs'),
   promises: {
     mkdir: jest.fn().mockResolvedValue(undefined),
     writeFile: jest.fn().mockResolvedValue(undefined),

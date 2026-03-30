@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  nestjs-test:
+    build:
+      context: ./nestjs-api
+      dockerfile: Dockerfile
+    command: sh -c "npx prisma generate && npm run test:cov -- --forceExit"
+    environment:
+      - NODE_ENV=test
