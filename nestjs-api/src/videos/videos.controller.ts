@@ -34,8 +34,9 @@ export class VideosController {
   }
 
   @Get()
-  list() {
-    return this.videos.listVideos().map((v) => ({
+  async list() {
+    const videos = await this.videos.listVideos();
+    return videos.map((v) => ({
       id: v.id,
       originalName: v.originalName,
       createdAt: v.createdAt,
