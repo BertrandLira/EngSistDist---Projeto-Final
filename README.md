@@ -92,27 +92,22 @@ GEMINI_MODEL=gemini-1.5-flash
 
 ### Passo 1 — Subir infraestrutura e preparar banco
 
+> **Nota:** `prisma migrate deploy` não funciona localmente neste setup (ARM64 + PostgreSQL 15). Use os comandos abaixo no lugar.
+
 ```bash
 # Sobe banco e cache em background
 docker compose up db cache -d
 
-# Aguarda o postgres inicializar (~3s) e cria as tabelas
+# Aguarda o postgres ficar pronto (pode levar alguns segundos)
+until docker exec postgres_db pg_isready -U user -d db -q; do sleep 1; done
+
+# Cria as tabelas
 docker cp nestjs-api/prisma/migrations/20250330000000_init/migration.sql postgres_db:/tmp/migration.sql
 docker exec postgres_db psql -U user -d db -f /tmp/migration.sql
 
 # Insere as 8 perguntas estáticas de fallback
-docker cp nestjs-api/prisma/seed.sql postgres_db:/tmp/seed.sql 2>/dev/null || \
-docker exec postgres_db psql -U user -d db -c "
-INSERT INTO \"StaticQuestion\" (id,question,options,answer,category) VALUES
-('sq-1','Qual das alternativas melhor descreve o tema central do vídeo?','[\"Inovação tecnológica\",\"História e cultura\",\"Saúde e bem-estar\",\"Finanças pessoais\"]','Inovação tecnológica','general'),
-('sq-2','O que você aprendeu de mais relevante neste conteúdo?','[\"Uma nova perspectiva sobre o tema\",\"Dados e estatísticas atualizados\",\"Técnicas práticas aplicáveis\",\"Contexto histórico do assunto\"]','Técnicas práticas aplicáveis','general'),
-('sq-3','Como o apresentador estruturou a argumentação principal?','[\"Problema → Solução → Resultado\",\"Histórico → Presente → Futuro\",\"Teoria → Prática → Conclusão\",\"Dados → Análise → Recomendação\"]','Problema → Solução → Resultado','structure'),
-('sq-4','Qual é a principal mensagem que o vídeo tenta transmitir?','[\"A importância da educação continuada\",\"O impacto das novas tecnologias\",\"A necessidade de mudança de comportamento\",\"A relevância da colaboração\"]','A importância da educação continuada','comprehension'),
-('sq-5','Que evidência o autor usa para sustentar seu argumento?','[\"Estudos de caso e exemplos reais\",\"Pesquisas acadêmicas citadas\",\"Comparações históricas\",\"Testemunhos de especialistas\"]','Estudos de caso e exemplos reais','analysis'),
-('sq-6','Qual conceito apresentado no vídeo você considerou mais desafiador?','[\"A definição técnica do tema\",\"As implicações práticas\",\"A relação com outros conceitos\",\"O contexto em que se aplica\"]','As implicações práticas','reflection'),
-('sq-7','De que forma o conteúdo do vídeo pode ser aplicado no dia a dia?','[\"Melhorando hábitos de estudo\",\"Otimizando processos de trabalho\",\"Aprimorando relações interpessoais\",\"Desenvolvendo habilidades técnicas\"]','Otimizando processos de trabalho','application'),
-('sq-8','Qual foi o momento mais impactante do vídeo?','[\"A revelação de um dado surpreendente\",\"A demonstração prática do conceito\",\"A conclusão e chamada à ação\",\"A apresentação do problema central\"]','A demonstração prática do conceito','engagement')
-ON CONFLICT DO NOTHING;"
+docker cp nestjs-api/prisma/seed.sql postgres_db:/tmp/seed.sql
+docker exec postgres_db psql -U user -d db -f /tmp/seed.sql
 ```
 
 ### Passo 2 — Subir todos os serviços
