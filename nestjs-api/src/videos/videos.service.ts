@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { createReadStream, promises as fs } from "fs";
 import { join } from "path";
 import type { Response } from "express";
+import { PrismaService } from "../prisma/prisma.service";
 
 export interface VideoRecord {
   id: string;
@@ -19,9 +20,11 @@ export interface VideoRecord {
 export class VideosService {
   private readonly uploadDir: string;
   private readonly workerUrl: string;
-  private readonly records = new Map<string, VideoRecord>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     this.uploadDir =
       this.config.get<string>("UPLOAD_DIR") ?? join(process.cwd(), "uploads");
     this.workerUrl =
@@ -36,40 +39,40 @@ export class VideosService {
     file: Express.Multer.File,
   ): Promise<{ record: VideoRecord }> {
     await this.ensureUploadDir();
+
     const id = randomUUID();
     const ext = this.extensionFromOriginal(file.originalname);
     const storedFilename = `${id}${ext}`;
     const dest = join(this.uploadDir, storedFilename);
     await fs.writeFile(dest, file.buffer);
 
-    const relativePath = storedFilename;
-    const record: VideoRecord = {
-      id,
-      storedFilename,
-      originalName: file.originalname,
-      mimeType: file.mimetype || "video/mp4",
-      createdAt: new Date().toISOString(),
-      relativePath,
-    };
-    this.records.set(id, record);
+    const video = await this.prisma.video.create({
+      data: {
+        id,
+        storedFilename,
+        originalName: file.originalname,
+        mimeType: file.mimetype || "video/mp4",
+        relativePath: storedFilename,
+      },
+    });
 
+    const record = this.toRecord(video);
     void this.enqueueTranscribe(record).catch(() => undefined);
 
     return { record };
   }
 
-  listVideos(): VideoRecord[] {
-    return [...this.records.values()].sort(
-      (a, b) => b.createdAt.localeCompare(a.createdAt),
-    );
+  async listVideos(): Promise<VideoRecord[]> {
+    const videos = await this.prisma.video.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+    return videos.map(this.toRecord);
   }
 
-  getRecord(id: string): VideoRecord {
-    const record = this.records.get(id);
-    if (!record) {
-      throw new NotFoundException(`Video ${id} not found`);
-    }
-    return record;
+  async getRecord(id: string): Promise<VideoRecord> {
+    const video = await this.prisma.video.findUnique({ where: { id } });
+    if (!video) throw new NotFoundException(`Video ${id} not found`);
+    return this.toRecord(video);
   }
 
   absolutePath(record: VideoRecord): string {
@@ -81,7 +84,7 @@ export class VideosService {
     rangeHeader: string | undefined,
     res: Response,
   ): Promise<void> {
-    const record = this.getRecord(id);
+    const record = await this.getRecord(id);
     const path = this.absolutePath(record);
     let stat;
     try {
@@ -126,7 +129,7 @@ export class VideosService {
   }
 
   async requestChallenges(videoId: string): Promise<unknown> {
-    const record = this.getRecord(videoId);
+    const record = await this.getRecord(videoId);
     const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/questions`;
     const res = await fetch(url, {
       method: "POST",
@@ -141,6 +144,26 @@ export class VideosService {
       throw new Error(`Worker questions failed: ${res.status} ${text}`);
     }
     return res.json();
+  }
+
+  private toRecord(video: {
+    id: string;
+    storedFilename: string;
+    originalName: string;
+    mimeType: string;
+    createdAt: Date;
+    transcript: string | null;
+    relativePath: string;
+  }): VideoRecord {
+    return {
+      id: video.id,
+      storedFilename: video.storedFilename,
+      originalName: video.originalName,
+      mimeType: video.mimeType,
+      createdAt: video.createdAt.toISOString(),
+      transcript: video.transcript ?? undefined,
+      relativePath: video.relativePath,
+    };
   }
 
   private extensionFromOriginal(name: string): string {
@@ -160,13 +183,13 @@ export class VideosService {
         relative_path: record.relativePath,
       }),
     });
-    if (!res.ok) {
-      return;
-    }
+    if (!res.ok) return;
     const body = (await res.json()) as { transcript?: string };
     if (body.transcript) {
-      record.transcript = body.transcript;
-      this.records.set(record.id, record);
+      await this.prisma.video.update({
+        where: { id: record.id },
+        data: { transcript: body.transcript },
+      });
     }
   }
 }
