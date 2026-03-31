@@ -1,3 +1,4 @@
+import logging
 import uuid
 from pathlib import Path
 
@@ -5,6 +6,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.services.ai_service import get_ai_provider
+from app.services import db_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["jobs"])
 
@@ -17,6 +22,7 @@ class TranscribeJobBody(BaseModel):
 class QuestionsJobBody(BaseModel):
     video_id: str = Field(..., min_length=1)
     relative_path: str = Field(..., min_length=1)
+    count: int = Field(default=5, ge=1, le=20)
 
 
 def _resolve_path(relative_path: str) -> Path:
@@ -48,13 +54,56 @@ def questions_job(body: QuestionsJobBody):
     path = _resolve_path(body.relative_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Video file not found on worker volume")
+
+    # Busca transcrição e descrição de cenas do banco
+    video = db_client.get_video(body.video_id)
+    transcript = video["transcript"] if video else ""
+    scene_description = video["scene_description"] if video else ""
+
+    if not transcript and not scene_description:
+        logger.warning("Vídeo %s sem transcrição nem descrição de cenas, gerando com contexto mínimo", body.video_id)
+        transcript = f"Vídeo: {path.name}"
+
+    # Gera perguntas via IA (Gemini ou OpenAI)
+    try:
+        provider = get_ai_provider()
+        questions = provider.generate_questions(
+            transcript=transcript,
+            scene_description=scene_description,
+            count=body.count,
+        )
+    except Exception as exc:
+        logger.exception("Falha na geração de perguntas via IA")
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc
+
+    if not questions:
+        raise HTTPException(status_code=502, detail="IA retornou 0 perguntas")
+
+    # Gera embeddings para cada pergunta
+    try:
+        embeddings = [provider.generate_embedding(q["prompt"]) for q in questions]
+    except Exception as exc:
+        logger.exception("Falha na geração de embeddings")
+        raise HTTPException(status_code=502, detail=f"Embedding generation failed: {exc}") from exc
+
+    # Salva no Postgres (tabela challenges)
+    try:
+        challenge_ids = db_client.save_challenges(body.video_id, questions, embeddings)
+    except Exception as exc:
+        logger.exception("Falha ao salvar desafios no banco")
+        raise HTTPException(status_code=500, detail=f"DB save failed: {exc}") from exc
+
     return {
         "job_id": str(uuid.uuid4()),
         "video_id": body.video_id,
+        "provider": settings.ai_provider,
         "questions": [
             {
-                "id": str(uuid.uuid4()),
-                "prompt": f"Stub question about {path.name}?",
+                "id": cid,
+                "prompt": q["prompt"],
+                "options": q.get("options"),
+                "answer": q.get("answer"),
             }
+            for cid, q in zip(challenge_ids, questions)
         ],
     }
