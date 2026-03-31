@@ -57,7 +57,15 @@ export class VideosController {
   @Post(":id/challenges")
   async challenges(@Param("id") id: string) {
     try {
-      return await this.videos.requestChallenges(id);
+      const challenge: any = await this.videos.requestChallenges(id);
+      // Frontend expects array of questions, and 'prompt' instead of 'question'
+      return { 
+        questions: [{
+          ...challenge,
+          prompt: challenge.question || challenge.prompt
+        }],
+        provider: "circuit-breaker"
+      };
     } catch (e) {
       if (e instanceof NotFoundException) {
         throw e;
