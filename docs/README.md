@@ -156,11 +156,36 @@ docker compose up --build -d
 
 ---
 
-## Próximos passos
+## O que falta fazer (Pendências / Próximos Passos)
 
-- **Pool assíncrono de desafios:** Worker gerando perguntas em loop contínuo (background), alimentando o pool sem depender do play do usuário.
-- **Busca por similaridade vetorial:** API consumindo perguntas do pool via `SELECT ... ORDER BY embedding <=> $1` em vez de chamar o worker sincronamente.
-- **Circuit Breaker + Fallback:** Se o pool/IA falhar, retornar perguntas de `static_fallback_questions` automaticamente (ADR 02).
-- **Cache-aside com Redis:** Cache de respostas frequentes para reduzir queries ao pgvector.
-- **Retry Pattern:** Tentativas automáticas com backoff exponencial em falhas transientes.
-- **Transcrição real:** Integração com Whisper (API ou local) para extrair áudio dos vídeos automaticamente.
+Em alinhamento com a separação de papéis descrita no [README.md principal](../README.md), os seguintes pontos ainda precisam ser implementados:
+
+### 1. Mensageria Assíncrona (RabbitMQ)
+- **Status:** Pendente.
+- **Responsável:** Middleware Eng.
+- **Descrição:** Atualmente o NestJS recruta o worker via chamada HTTP assíncrona (`fetch`). A arquitetura final prevê que o NestJS publique eventos em tópicos do RabbitMQ e o FastAPI atue como um *consumer* dessa fila, garantindo resiliência em caso de picos de acessos sem sobrecarregar a rede interna com HTTP requests zumbis.
+
+### 2. Busca por Similaridade Vetorial Avançada (pgvector)
+- **Status:** Parcial (Embeddings estão sendo salvos).
+- **Responsável:** IA / Data Engineer.
+- **Descrição:** Hoje, a "Camada 2" do Circuit Breaker busca diretamente no banco por `$videoId`. O objetivo do `pgvector` é permitir buscar desafios *similares* gerados para **outros** vídeos caso o vídeo atual esgote seu pool, utilizando a query: `SELECT ... ORDER BY embedding <=> $1`.
+
+### 3. Testes de Carga e Chaos Engineering (QA / Resiliency)
+- **Status:** Pendente.
+- **Responsável:** QA / Resiliency.
+- **Descrição:** Executar planos de teste (K6, JMeter) com alto volume de requisições simulando usuários assistindo aos vídeos. Simular a queda do container do `python-worker` para validar na prática o Circuit Breaker servindo o Fallback Estático ininterruptamente. Implementar simulações de DoS.
+
+### 4. Cache-Aside Sensível (Transcrições)
+- **Status:** Pendente.
+- **Responsável:** Data Engineer / Backend.
+- **Descrição:** Armazenar no Redis transcrições e metadados que são lidos pelo Worker Python frequentemente para poupar chamadas repetitivas de extração textual no Postgres.
+
+### 5. Padrão Retry e Observabilidade (Backoff Exponencial)
+- **Status:** Pendente.
+- **Responsável:** DevOps / Backend.
+- **Descrição:** Adicionar biblioteca robusta (ex: `@nestjs/bull` ou puro RxJS) para tentar reacessar serviços (banco, redis ou APIs pagas Gemini/OpenAI) caso tomem timeout, utilizando *backoff exponencial*.
+
+### 6. Transcrição de Áudio Real (Whisper)
+- **Status:** Stub (Mocado).
+- **Responsável:** IA Engineer.
+- **Descrição:** Substituir a geração de transcrição fixa no Python por extração via FFMPEG acoplada ao pipeline do Whisper API/Local.

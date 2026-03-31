@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -7,16 +7,19 @@ import { createReadStream, promises as fs } from "fs";
 import { join } from "path";
 import type { Response } from "express";
 import { Video } from "../database/entities/video.entity";
+import { ChallengesService } from "../challenges/challenges.service";
 
 @Injectable()
 export class VideosService {
   private readonly uploadDir: string;
   private readonly workerUrl: string;
+  private readonly logger = new Logger(VideosService.name);
 
   constructor(
     private readonly config: ConfigService,
     @InjectRepository(Video)
     private readonly videoRepo: Repository<Video>,
+    private readonly challengesService: ChallengesService,
   ) {
     this.uploadDir =
       this.config.get<string>("UPLOAD_DIR") ?? join(process.cwd(), "uploads");
@@ -116,22 +119,36 @@ export class VideosService {
     createReadStream(path).pipe(res);
   }
 
+  /**
+   * Circuit Breaker: tenta pool Redis → DB → fallback estático.
+   * Se o pool estiver vazio, dispara o worker em background para popular.
+   */
   async requestChallenges(videoId: string): Promise<unknown> {
     const record = await this.getRecord(videoId);
-    const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/questions`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        video_id: record.id,
-        relative_path: record.relativePath,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Worker questions failed: ${res.status} ${text}`);
+
+    // Verifica tamanho do pool
+    const { size } = await this.challengesService.getPoolSize(videoId);
+    let triggerWorker = size === 0;
+
+    if (triggerWorker) {
+      // Se não tem nada no pool, verifica se tem algo no banco
+      const dbCount = await this.challengesService.countUnusedDbChallenges(videoId);
+      if (dbCount > 0) {
+        // Já tem perguntas geradas pela IA aguardando serem consumidas, não castiga a IA
+        triggerWorker = false;
+        this.logger.log(`Pool vazio, mas DB tem ${dbCount} perguntas prontas. Worker pulado.`);
+      }
     }
-    return res.json();
+
+    if (triggerWorker) {
+      this.logger.log(`Pool e DB vazios para ${videoId}, disparando worker em background`);
+      void this.triggerWorkerQuestions(record).catch((err) =>
+        this.logger.warn(`Worker question generation failed: ${err}`),
+      );
+    }
+
+    // Retorna desafio via circuit breaker (pool → DB → static)
+    return this.challengesService.getChallenge(videoId);
   }
 
   private extensionFromOriginal(name: string): string {
@@ -158,6 +175,42 @@ export class VideosService {
     if (body.transcript) {
       record.transcript = body.transcript;
       await this.videoRepo.save(record);
+    }
+  }
+
+  /**
+   * Chama o worker para gerar perguntas via IA e empurra no pool.
+   */
+  private async triggerWorkerQuestions(record: Video): Promise<void> {
+    const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/questions`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_id: record.id,
+        relative_path: record.relativePath,
+      }),
+    });
+    if (!res.ok) {
+      this.logger.warn(`Worker /jobs/questions retornou ${res.status}`);
+      return;
+    }
+    const body = (await res.json()) as {
+      questions?: Array<{
+        id: string;
+        prompt: string;
+        options?: string[];
+        answer?: string;
+      }>;
+    };
+    if (body.questions?.length) {
+      const items = body.questions.map((q) => ({
+        question: q.prompt,
+        options: q.options ?? [],
+        answer: q.answer ?? '',
+      }));
+      await this.challengesService.pushQuestionsToPool(record.id, items);
+      this.logger.log(`${items.length} perguntas empurradas ao pool via worker`);
     }
   }
 }
