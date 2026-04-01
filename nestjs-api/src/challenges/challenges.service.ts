@@ -5,6 +5,7 @@ import { PoolService } from '../pool/pool.service';
 import { Challenge } from '../database/entities/challenge.entity';
 import { StaticFallbackQuestion } from '../database/entities/static-question.entity';
 import { QuestionItemDto } from './dto/push-questions.dto';
+import { DeliveryEventsService } from './delivery-events.service';
 
 export interface ChallengeResponse {
   id: string;
@@ -25,6 +26,7 @@ export class ChallengesService {
     @InjectRepository(StaticFallbackQuestion)
     private readonly staticRepo: Repository<StaticFallbackQuestion>,
     private readonly pool: PoolService,
+    private readonly deliveryEvents: DeliveryEventsService,
   ) {}
 
   /**
@@ -34,13 +36,17 @@ export class ChallengesService {
    *   3º Fallback     → pergunta genérica da tabela static_fallback_questions
    */
   async getChallenge(videoId: string): Promise<ChallengeResponse> {
+    let result: ChallengeResponse;
+
     // --- Camada 1: Redis Pool ---
     try {
       const pooled = await this.pool.popQuestion(videoId);
       if (pooled) {
         this.logger.log(`[CB] source=pool  video=${videoId}`);
         void this.markChallengeConsumed(pooled.id);
-        return { ...pooled, source: 'pool' };
+        result = { ...pooled, source: 'pool' };
+        void this.deliveryEvents.record(videoId, result);
+        return result;
       }
     } catch (err) {
       this.logger.warn(`[CB] Redis indisponível, pulando pool: ${err}`);
@@ -51,20 +57,24 @@ export class ChallengesService {
     if (dbChallenge) {
       this.logger.log(`[CB] source=vector video=${videoId}`);
       void this.markChallengeConsumed(dbChallenge.id);
-      return {
+      result = {
         id: dbChallenge.id,
         question: dbChallenge.prompt,
         options: dbChallenge.options as string[],
         answer: dbChallenge.answer ?? '',
         source: 'vector',
       };
+      void this.deliveryEvents.record(videoId, result);
+      return result;
     }
 
     // --- Camada 3: Static Fallback (Circuit Breaker OPEN) ---
     this.logger.warn(
       `[CB] OPEN — pool e DB vazios, usando fallback estático para video=${videoId}`,
     );
-    return this.getStaticFallback();
+    result = await this.getStaticFallback();
+    void this.deliveryEvents.record(videoId, result);
+    return result;
   }
 
   /**

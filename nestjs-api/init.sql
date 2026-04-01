@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS videos (
     relative_path   VARCHAR(1024) NOT NULL,
     transcript        TEXT,
     scene_description TEXT,
+    transcript_mode VARCHAR(16),
+    transcript_generated_at TIMESTAMPTZ,
+    transcript_generation_log JSONB DEFAULT '[]'::jsonb,
+    transcript_job_status VARCHAR(16),
     created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
@@ -85,3 +89,34 @@ INSERT INTO static_fallback_questions (prompt, options, answer) VALUES
     '["Jovens", "Adultos", "Profissionais", "Todos"]',
     NULL
 );
+
+-- -----------------------------------------------
+-- Auditoria: geração de perguntas (IA) e entregas
+-- -----------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_question_generation_logs (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    video_id        UUID          NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    provider        VARCHAR(32)   NOT NULL,
+    model             VARCHAR(128),
+    prompt            TEXT          NOT NULL,
+    response_raw      TEXT          NOT NULL,
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_qgen_video ON ai_question_generation_logs (video_id);
+
+CREATE TABLE IF NOT EXISTS challenge_delivery_events (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    video_id            UUID          NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    delivered_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    delivery_source     VARCHAR(16)   NOT NULL
+                        CHECK (delivery_source IN ('pool', 'vector', 'static')),
+    challenge_id        UUID          REFERENCES challenges(id) ON DELETE SET NULL,
+    static_question_id  UUID          REFERENCES static_fallback_questions(id) ON DELETE SET NULL,
+    question_snapshot   TEXT          NOT NULL,
+    options_snapshot    JSONB,
+    answer_snapshot     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_video ON challenge_delivery_events (video_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_at ON challenge_delivery_events (delivered_at);

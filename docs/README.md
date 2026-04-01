@@ -14,9 +14,10 @@ O [README principal](../README.md) na raiz continua sendo a visão da disciplina
 |--------|--------|-------|--------|
 | `nextjs-web` | `nextjs-app/` | 3000 | Interface: área **anunciante** (`/advertiser`) e **pública** (`/public`); chama a API Nest no browser (`NEXT_PUBLIC_API_URL`) e, no servidor, usa `INTERNAL_API_URL` para listar vídeos. |
 | `nestjs-api` | `nestjs-api/` | 4000 | API principal: upload multipart, **persistência em Postgres via TypeORM**, gravação no volume `video_data`, **stream HTTP** com suporte a `Range` (206), proxy de desafios ao worker. |
-| `fastapi-worker` | `python-worker/` | 8000 | Worker IA: transcrição (stub), **geração real de perguntas via Gemini/OpenAI**, **geração de embeddings** e **persistência no pgvector**. |
+| `fastapi-worker` | `python-worker/` | 8000 | API HTTP: **geração de perguntas** (Gemini/OpenAI), embeddings e persistência em `challenges`; opcionalmente `POST /jobs/transcribe` (mesmo pipeline da fila). |
+| `transcribe-worker` | `python-worker/` | — | **Consumidor Redis** (`BRPOP`): lê jobs `transcribe:jobs`, roda ffmpeg + transcrição (`TRANSCRIBE_MODE`: `stub` / `gemini` / `local` / `api`). Falhas → texto stub + evento `fallback_stub` no log JSON. |
 | `db` | — | 5432 | PostgreSQL com **pgvector** — schema com tabelas `videos`, `challenges` (pool IA) e `static_fallback_questions` (fallback). |
-| `cache` | — | 6379 | Redis (preparado para cache-aside — ainda não integrado). |
+| `cache` | — | 6379 | **Redis:** fila **LPUSH/BRPOP** `transcribe:jobs` entre Nest e `transcribe-worker`; cache-aside adicional pode ser evoluído depois. |
 
 ### Persistência Postgres
 
@@ -57,7 +58,7 @@ O **Next não monta** o volume de vídeos; o browser consome o stream via URL p�
 
 ### Fluxos implementados
 
-1. **Anunciante:** formulário em `/advertiser` envia `POST /videos/upload` (multipart) para a Nest; arquivo salvo no volume e metadados persistidos no Postgres; Nest chama o worker para transcrição (stub).
+1. **Anunciante:** formulário em `/advertiser` envia `POST /videos/upload` (multipart) para a Nest; arquivo salvo no volume e linha em `videos` no Postgres; a Nest faz **LPUSH** em Redis (`transcribe:jobs`). O serviço **`transcribe-worker`** consome o job, transcreve conforme **`TRANSCRIBE_MODE`** (`stub`, **`gemini`** com `GEMINI_API_KEY`, `local` faster-whisper, `api` OpenAI `whisper-1`). Qualquer falha (quota, rede, ffmpeg, etc.) grava **texto stub genérico**, `transcript_mode=stub` e **`fallback_stub`** no JSON de auditoria.
 2. **Público:** `/public` lista `GET /videos` (SSR usando `INTERNAL_API_URL`). Cada item usa `<video src=...>` apontando para o stream da Nest. No **play**, o cliente chama `POST /videos/:id/challenges`, que repassa ao worker para gerar perguntas reais via IA; o resultado é exibido em **cards interativos** com opções clicáveis, feedback de acerto/erro e navegação entre perguntas.
 
 ### Endpoints Nest (resumo)
@@ -66,12 +67,25 @@ O **Next não monta** o volume de vídeos; o browser consome o stream via URL p�
 - `POST /videos/upload` — campo `file`
 - `GET /videos` — lista metadados do Postgres
 - `GET /videos/:id/stream` — `video/mp4`, `Accept-Ranges`, **206** quando há `Range`
-- `POST /videos/:id/challenges` — proxy ao worker
+- `POST /videos/:id/challenges` — circuit breaker (pool → DB → estático); regista **`challenge_delivery_events`**
+- `GET /stats/videos` — agregado para a página **Estatísticas** (transcript, logs, entregas, auditoria IA)
+
+### Migração de base já existente
+
+O **`docker build` da Nest não altera o Postgres** (não há base de dados nessa fase). Em cada **arranque** da API (`npm run start:dev`, `docker compose up`), a Nest aplica automaticamente o ficheiro idempotente [`nestjs-api/migrations/02-stats.sql`](nestjs-api/migrations/02-stats.sql) logo após ligar ao Postgres (`dataSourceFactory`), criando colunas/tabelas em falta (ex.: `videos.transcript_mode`).
+
+Se quiseres aplicar só pela shell (opcional), com o Compose a correr:
+
+```bash
+docker compose exec db psql -U user -d db -f /migrations/02-stats.sql
+```
+
+Bases novas criadas a partir do `init.sql` atual já incluem estas estruturas; a migração automática é redundante mas segura.
 
 ### Endpoints FastAPI (prefixo `/api/v1`)
 
 - `GET /health`
-- `POST /jobs/transcribe` — body: `video_id`, `relative_path` (stub)
+- `POST /jobs/transcribe` — body: `video_id`, `relative_path` — mesmo pipeline de transcrição + `UPDATE` em `videos` (testes manuais)
 - `POST /jobs/questions` — body: `video_id`, `relative_path`, `count` — **gera perguntas via IA e salva no banco**
 
 ---
@@ -106,9 +120,12 @@ flowchart TB
   Tr --> Vol
   Q --> PG
   Orch --> PG
-  Orch -->|HTTP_interno| Tr
+  Orch --> Redis
+  Redis --> Tr
   Orch -->|HTTP_interno| Q
 ```
+
+*(Fluxo de upload: `Upload` grava arquivo e publica job em **Redis**; o processo de transcrição roda no container **transcribe-worker**, não mais via HTTP síncrono do Nest para o `/jobs/transcribe`.)*
 
 ---
 
@@ -128,28 +145,55 @@ nestjs-api/
 python-worker/
   app/main.py
   app/api/routes/                # health, jobs
-  app/services/                  # ai_service (Gemini/OpenAI), db_client (Postgres)
-  app/core/config.py             # MEDIA_ROOT, AI_PROVIDER, API keys, DATABASE_URL
+  app/services/                  # ai_service, db_client, transcribe_pipeline
+  app/worker/transcribe_consumer.py
+  app/core/config.py             # MEDIA_ROOT, REDIS_URL, TRANSCRIBE_MODE, etc.
 ```
+
+---
+
+## Como obter API keys (Gemini e OpenAI)
+
+- **Google Gemini:** acesse [Google AI Studio](https://aistudio.google.com/apikey), faça login com a conta Google do projeto e clique em **Create API key** (ou use uma chave de projeto no Google Cloud com a API Generative Language habilitada). Guarde o valor — ele começa tipicamente por `AIza...`.
+
+- **OpenAI:** acesse [platform.openai.com](https://platform.openai.com/), crie conta / faça login, vá em **API keys** e **Create new secret key**. É preciso ter créditos ou plano que permita uso da API. A chave costuma começar por `sk-...`.
+
+Nunca commite chaves no Git. Os arquivos `.env` e `.env.local` estão no [`.gitignore`](../.gitignore).
+
+---
+
+## Arquivos `.env`, `.env.local` e Docker Compose
+
+O **Docker Compose** substitui variáveis como `${GEMINI_API_KEY}` lendo **por omissão** o ficheiro **`.env`** na mesma pasta que o `docker-compose.yml`.
+
+- **Opção A (mais simples):** copie [`.env.example`](../.env.example) para **`.env`**, preencha as chaves e execute `docker compose up --build`.
+
+- **Opção B (preferir o nome `.env.local`):** copie o exemplo para **`.env.local`** e suba o stack indicando esse ficheiro (o Compose **não** carrega `.env.local` automaticamente):
+
+```bash
+docker compose --env-file .env.local up --build -d
+```
+
+Assim as mesmas variáveis do exemplo entram na interpolação `${...}` e nos contentores `fastapi-worker` e `transcribe-worker`.
+
+*(O Next.js em desenvolvimento local usa por vezes `.env.local` só para o front; aqui o foco é o Compose na raiz do repositório.)*
 
 ---
 
 ## Como subir o ambiente
 
-1. Crie um arquivo `.env` na raiz com suas chaves:
-
-```env
-AI_PROVIDER=gemini
-GEMINI_API_KEY=sua-chave
-# ou para OpenAI:
-# AI_PROVIDER=openai
-# OPENAI_API_KEY=sua-chave
-```
+1. Copie o modelo [`.env.example`](../.env.example) para `.env` ou `.env.local` e preencha as chaves.
 
 2. Na raiz do repositório:
 
 ```bash
 docker compose up --build -d
+```
+
+Se usou **`.env.local`** em vez de **`.env`**, use:
+
+```bash
+docker compose --env-file .env.local up --build -d
 ```
 
 3. Acesse `http://localhost:3000`
@@ -160,10 +204,9 @@ docker compose up --build -d
 
 Em alinhamento com a separação de papéis descrita no [README.md principal](../README.md), os seguintes pontos ainda precisam ser implementados:
 
-### 1. Mensageria Assíncrona (RabbitMQ)
-- **Status:** Pendente.
-- **Responsável:** Middleware Eng.
-- **Descrição:** Atualmente o NestJS recruta o worker via chamada HTTP assíncrona (`fetch`). A arquitetura final prevê que o NestJS publique eventos em tópicos do RabbitMQ e o FastAPI atue como um *consumer* dessa fila, garantindo resiliência em caso de picos de acessos sem sobrecarregar a rede interna com HTTP requests zumbis.
+### 1. Mensageria Assíncrona (RabbitMQ ou evolução da fila Redis)
+- **Status:** Parcial — **fila Redis** (`transcribe:jobs`) já desacopla upload da transcrição.
+- **Descrição:** O README da equipe ainda menciona RabbitMQ; se for exigido na disciplina, pode coexistir com Redis (filas diferentes) ou substituir o broker conforme ADR.
 
 ### 2. Busca por Similaridade Vetorial Avançada (pgvector)
 - **Status:** Parcial (Embeddings estão sendo salvos).
@@ -185,7 +228,6 @@ Em alinhamento com a separação de papéis descrita no [README.md principal](..
 - **Responsável:** DevOps / Backend.
 - **Descrição:** Adicionar biblioteca robusta (ex: `@nestjs/bull` ou puro RxJS) para tentar reacessar serviços (banco, redis ou APIs pagas Gemini/OpenAI) caso tomem timeout, utilizando *backoff exponencial*.
 
-### 6. Transcrição de Áudio Real (Whisper)
-- **Status:** Stub (Mocado).
-- **Responsável:** IA Engineer.
-- **Descrição:** Substituir a geração de transcrição fixa no Python por extração via FFMPEG acoplada ao pipeline do Whisper API/Local.
+### 6. Transcrição de Áudio (Gemini / Whisper local / OpenAI)
+- **Status:** Implementado com **ffmpeg** + **`TRANSCRIBE_MODE`**: `stub`, `gemini` (multimodal + `GEMINI_API_KEY`; opcional `TRANSCRIBE_GEMINI_MODEL`), `local` (**faster-whisper**), `api` (OpenAI `whisper-1`). Em erro, **fallback stub** + log `fallback_stub`.
+- **Descrição:** Ajustar `WHISPER_*` para local; quotas OpenAI/Gemini podem forçar fallback visível em Estatísticas.

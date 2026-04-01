@@ -9,6 +9,8 @@ export type VideoListItem = {
   originalName: string;
   createdAt: string;
   hasTranscript: boolean;
+  transcriptMode?: string | null;
+  transcriptJobStatus?: string | null;
 };
 
 type ChallengeState =
@@ -82,7 +84,37 @@ export function PublicVideoGallery({ videos }: { videos: VideoListItem[] }) {
               {v.originalName}
             </p>
             <p className="mb-3 text-xs text-zinc-500">
-              {v.id} · transcript: {v.hasTranscript ? "sim" : "não"}
+              {v.id} · transcrição: {v.hasTranscript ? "sim" : "não"}
+              {v.transcriptJobStatus != null && v.transcriptJobStatus !== "" && (
+                <>
+                  {" "}
+                  · job: {v.transcriptJobStatus}
+                </>
+              )}
+              {v.transcriptMode != null && v.transcriptMode !== "" && (
+                <>
+                  {" "}
+                  · modo:{" "}
+                  <span
+                    className={
+                      v.transcriptMode === "stub"
+                        ? "font-medium text-amber-700 dark:text-amber-400"
+                        : ""
+                    }
+                  >
+                    {v.transcriptMode}
+                  </span>
+                  {v.transcriptMode === "stub" && (
+                    <span className="text-zinc-400">
+                      {" "}
+                      (texto de exemplo; use{" "}
+                      <code className="text-[10px]">gemini</code>,{" "}
+                      <code className="text-[10px]">local</code> ou{" "}
+                      <code className="text-[10px]">api</code> no worker)
+                    </span>
+                  )}
+                </>
+              )}
             </p>
             <video
               controls
