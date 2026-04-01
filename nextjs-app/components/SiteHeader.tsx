@@ -19,6 +19,12 @@ export function SiteHeader() {
         >
           Público
         </Link>
+        <Link
+          href="/estatisticas"
+          className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+        >
+          Estatísticas
+        </Link>
       </div>
     </header>
   );

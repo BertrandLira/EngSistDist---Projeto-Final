@@ -6,6 +6,7 @@ import { RabbitMQService } from '../rabbitmq/rabbitmq.service';
 import { Challenge } from '../database/entities/challenge.entity';
 import { StaticFallbackQuestion } from '../database/entities/static-question.entity';
 import { QuestionItemDto } from './dto/push-questions.dto';
+import { DeliveryEventsService } from './delivery-events.service';
 
 export interface ChallengeResponse {
   id: string;
@@ -29,6 +30,7 @@ export class ChallengesService {
     private readonly pool: PoolService,
 
     private readonly rabbit: RabbitMQService,
+    private readonly deliveryEvents: DeliveryEventsService,
   ) {}
 
   /**
@@ -38,6 +40,8 @@ export class ChallengesService {
    * 3º Static fallback
    */
   async getChallenge(videoId: string): Promise<ChallengeResponse> {
+    let result: ChallengeResponse;
+
     // --- Camada 1: Redis Pool ---
     try {
       const pooled = await this.pool.popQuestion(videoId);
@@ -64,8 +68,9 @@ export class ChallengesService {
         }
 
         void this.markChallengeConsumed(pooled.id);
-
-        return { ...pooled, source: 'pool' };
+        result = { ...pooled, source: 'pool' };
+        void this.deliveryEvents.record(videoId, result);
+        return result;
       }
     } catch (err) {
       this.logger.warn(`[CB] Redis indisponível, pulando pool: ${err}`);
@@ -90,22 +95,24 @@ export class ChallengesService {
       this.logger.log(`[CB] source=vector video=${videoId}`);
 
       void this.markChallengeConsumed(dbChallenge.id);
-
-      return {
+      result = {
         id: dbChallenge.id,
         question: dbChallenge.prompt,
         options: dbChallenge.options as string[],
         answer: dbChallenge.answer ?? '',
         source: 'vector',
       };
+      void this.deliveryEvents.record(videoId, result);
+      return result;
     }
 
     // --- Camada 3: Static Fallback ---
     this.logger.warn(
       `[CB] OPEN — pool e DB vazios, usando fallback estático para video=${videoId}`,
     );
-
-    return this.getStaticFallback();
+    result = await this.getStaticFallback();
+    void this.deliveryEvents.record(videoId, result);
+    return result;
   }
 
   /**

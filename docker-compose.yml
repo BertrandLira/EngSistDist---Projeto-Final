@@ -15,7 +15,8 @@ services:
       - NEXT_PUBLIC_API_URL=http://127.0.0.1:4000
       - INTERNAL_API_URL=http://nestjs-api:4000
     depends_on:
-      - nestjs-api
+      nestjs-api:
+        condition: service_healthy
 
   nestjs-api:
     build:
@@ -37,9 +38,26 @@ services:
       - REDIS_URL=redis://cache:6379
       - PYTHON_WORKER_URL=http://fastapi-worker:8000
     depends_on:
-      - db
-      - cache
-      - fastapi-worker
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      fastapi-worker:
+        condition: service_started
+      transcribe-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:4000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
 
   fastapi-worker:
     build:
@@ -53,12 +71,43 @@ services:
     environment:
       - MEDIA_ROOT=/app/media
       - DATABASE_URL=postgresql://user:pass@db:5432/db
+      - REDIS_URL=redis://cache:6379
       - AI_PROVIDER=${AI_PROVIDER:-gemini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-}
+      - TRANSCRIBE_MODE=${TRANSCRIBE_MODE:-stub}
+      - TRANSCRIBE_GEMINI_MODEL=${TRANSCRIBE_GEMINI_MODEL:-}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
     depends_on:
       - db
+      - cache
+
+  transcribe-worker:
+    build:
+      context: ./python-worker
+      dockerfile: Dockerfile
+    container_name: python_transcribe_worker
+    volumes:
+      - video_data:/app/media
+    environment:
+      - MEDIA_ROOT=/app/media
+      - DATABASE_URL=postgresql://user:pass@db:5432/db
+      - REDIS_URL=redis://cache:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-}
+      - TRANSCRIBE_MODE=${TRANSCRIBE_MODE:-stub}
+      - TRANSCRIBE_GEMINI_MODEL=${TRANSCRIBE_GEMINI_MODEL:-}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+    command: ["python", "-m", "app.worker.transcribe_consumer"]
+    depends_on:
+      - db
+      - cache
 
   db:
     image: ankane/pgvector:latest
@@ -68,16 +117,28 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./nestjs-api/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./nestjs-api/migrations:/migrations:ro
     environment:
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=pass
       - POSTGRES_DB=db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   cache:
     image: redis:alpine
     container_name: redis_cache
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   rabbitmq:
     image: rabbitmq:3-management

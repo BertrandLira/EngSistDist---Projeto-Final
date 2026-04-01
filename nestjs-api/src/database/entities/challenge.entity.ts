@@ -13,7 +13,7 @@ export class Challenge {
   prompt: string;
 
   @Column({ type: 'jsonb', nullable: true })
-  options: string[] | null;
+  options: object | null;
 
   @Column({ type: 'text', nullable: true })
   answer: string | null;
@@ -22,7 +22,7 @@ export class Challenge {
   @Column({ type: 'varchar', nullable: true, select: false })
   embedding: string | null;
 
-  @Column({ length: 16, default: 'ai' })
+  @Column({ type: 'varchar', length: 16, default: 'ai' })
   source: 'ai' | 'static';
 
   @Column({ default: false })

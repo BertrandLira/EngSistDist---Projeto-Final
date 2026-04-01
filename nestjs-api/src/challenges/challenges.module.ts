@@ -6,15 +6,21 @@ import { PoolModule } from '../pool/pool.module';
 import { Challenge } from '../database/entities/challenge.entity';
 import { StaticFallbackQuestion } from '../database/entities/static-question.entity';
 import { RabbitMQModule } from '../rabbitmq/rabbitmq.module';
+import { ChallengeDeliveryEvent } from '../database/entities/challenge-delivery-event.entity';
+import { DeliveryEventsService } from './delivery-events.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Challenge, StaticFallbackQuestion]),
+    TypeOrmModule.forFeature([
+      Challenge,
+      StaticFallbackQuestion,
+      ChallengeDeliveryEvent,
+    ]),
     PoolModule,
     RabbitMQModule,
   ],
   controllers: [ChallengesController],
-  providers: [ChallengesService],
+  providers: [ChallengesService, DeliveryEventsService],
   exports: [ChallengesService],
 })
 export class ChallengesModule {}
