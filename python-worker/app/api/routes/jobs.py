@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.services.ai_service import get_ai_provider
 from app.services import db_client
+from app.services.transcribe_pipeline import transcribe_video_file_with_audit
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,19 @@ def transcribe_job(body: TranscribeJobBody):
     path = _resolve_path(body.relative_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Video file not found on worker volume")
-    # Stub: real pipeline = ffmpeg extract audio + Whisper
+    try:
+        text, mode, log_entries, scene_desc = transcribe_video_file_with_audit(path)
+        db_client.update_video_transcript_full(
+            body.video_id, text, mode, log_entries, scene_description=scene_desc
+        )
+    except Exception as exc:
+        logger.exception("Transcrição HTTP falhou")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "job_id": str(uuid.uuid4()),
         "video_id": body.video_id,
         "status": "completed",
-        "transcript": f"[stub transcript for {path.name}]",
+        "transcript": text,
     }
 
 
@@ -64,14 +72,15 @@ def questions_job(body: QuestionsJobBody):
         logger.warning("Vídeo %s sem transcrição nem descrição de cenas, gerando com contexto mínimo", body.video_id)
         transcript = f"Vídeo: {path.name}"
 
-    # Gera perguntas via IA (Gemini ou OpenAI)
+    # Gera perguntas via IA (Gemini ou OpenAI) + auditoria prompt/resposta
     try:
         provider = get_ai_provider()
-        questions = provider.generate_questions(
+        questions, prompt_text, response_raw = provider.generate_questions_with_raw(
             transcript=transcript,
             scene_description=scene_description,
             count=body.count,
         )
+        model_name = getattr(provider, "model", None) or settings.ai_model or ""
     except Exception as exc:
         logger.exception("Falha na geração de perguntas via IA")
         raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc
@@ -92,6 +101,17 @@ def questions_job(body: QuestionsJobBody):
     except Exception as exc:
         logger.exception("Falha ao salvar desafios no banco")
         raise HTTPException(status_code=500, detail=f"DB save failed: {exc}") from exc
+
+    try:
+        db_client.insert_ai_question_generation_log(
+            body.video_id,
+            settings.ai_provider,
+            model_name,
+            prompt_text,
+            response_raw,
+        )
+    except Exception as exc:
+        logger.warning("Auditoria IA não persistida: %s", exc)
 
     return {
         "job_id": str(uuid.uuid4()),

@@ -1,6 +1,6 @@
 import { PublicVideoGallery } from "@/components/PublicVideoGallery";
 import type { VideoListItem } from "@/components/PublicVideoGallery";
-import { serverApiUrl } from "@/lib/api";
+import { serverApiUrl } from "@/lib/server-api-url";
 
 async function fetchVideos(): Promise<VideoListItem[]> {
   const base = serverApiUrl();
@@ -21,7 +21,11 @@ export default async function PublicPage() {
       </h1>
       <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
         Stream do MP4 vem da Nest (<code className="text-xs">/videos/:id/stream</code>
-        ). Ao dar play, é feito POST para gerar perguntas (stub no worker).
+        ). Ao dar play, é feito POST para gerar perguntas. Use{" "}
+        <code className="text-xs">TRANSCRIBE_MODE=gemini</code> (com chave),{" "}
+        <code className="text-xs">local</code> ou <code className="text-xs">api</code>{" "}
+        para transcrição real; em <code className="text-xs">stub</code> ou após falha
+        da API, o texto é exemplo genérico (ver Estatísticas).
       </p>
       <div className="mt-8">
         <PublicVideoGallery videos={videos} />

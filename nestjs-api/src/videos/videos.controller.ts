@@ -30,6 +30,7 @@ export class VideosController {
       id: record.id,
       originalName: record.originalName,
       createdAt: record.createdAt,
+      transcriptJobStatus: record.transcriptJobStatus ?? null,
     };
   }
 
@@ -41,7 +42,14 @@ export class VideosController {
       originalName: v.originalName,
       createdAt: v.createdAt,
       hasTranscript: Boolean(v.transcript),
+      transcriptMode: v.transcriptMode ?? null,
+      transcriptJobStatus: v.transcriptJobStatus ?? null,
     }));
+  }
+
+  @Get(":id/transcript-status")
+  async transcriptStatus(@Param("id") id: string) {
+    return this.videos.getTranscriptJobStatus(id);
   }
 
   @Get(":id/stream")
