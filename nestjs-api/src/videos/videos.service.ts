@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
+import type Redis from "ioredis";
 import { Repository } from "typeorm";
 import { randomUUID } from "crypto";
 import { createReadStream, promises as fs } from "fs";
@@ -8,6 +9,10 @@ import { join } from "path";
 import type { Response } from "express";
 import { Video } from "../database/entities/video.entity";
 import { ChallengesService } from "../challenges/challenges.service";
+import { REDIS_CLIENT } from "../redis/redis.module";
+
+/** Mesma chave que o consumidor Python em app/core/config.py */
+export const TRANSCRIBE_QUEUE_KEY = "transcribe:jobs";
 
 @Injectable()
 export class VideosService {
@@ -17,6 +22,8 @@ export class VideosService {
 
   constructor(
     private readonly config: ConfigService,
+    @Inject(REDIS_CLIENT)
+    private readonly redis: Redis,
     @InjectRepository(Video)
     private readonly videoRepo: Repository<Video>,
     private readonly challengesService: ChallengesService,
@@ -49,9 +56,22 @@ export class VideosService {
     });
     await this.videoRepo.save(record);
 
-    void this.enqueueTranscribe(record).catch(() => undefined);
+    try {
+      await this.enqueueTranscribeJob(record);
+      await this.videoRepo.update(
+        { id: record.id },
+        { transcriptJobStatus: "queued" },
+      );
+    } catch (err) {
+      this.logger.warn(`Fila de transcrição: ${err}`);
+      await this.videoRepo.update(
+        { id: record.id },
+        { transcriptJobStatus: "failed" },
+      );
+    }
 
-    return { record };
+    const saved = await this.videoRepo.findOne({ where: { id: record.id } });
+    return { record: saved ?? record };
   }
 
   async listVideos(): Promise<Video[]> {
@@ -64,6 +84,21 @@ export class VideosService {
       throw new NotFoundException(`Video ${id} not found`);
     }
     return record;
+  }
+
+  async getTranscriptJobStatus(id: string): Promise<{
+    status: string | null;
+    transcriptMode: string | null;
+    transcriptGeneratedAt: string | null;
+  }> {
+    const record = await this.getRecord(id);
+    return {
+      status: record.transcriptJobStatus ?? null,
+      transcriptMode: record.transcriptMode ?? null,
+      transcriptGeneratedAt: record.transcriptGeneratedAt
+        ? record.transcriptGeneratedAt.toISOString()
+        : null,
+    };
   }
 
   absolutePath(record: Video): string {
@@ -158,24 +193,14 @@ export class VideosService {
     return ".mp4";
   }
 
-  private async enqueueTranscribe(record: Video): Promise<void> {
-    const url = `${this.workerUrl.replace(/\/$/, "")}/api/v1/jobs/transcribe`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        video_id: record.id,
-        relative_path: record.relativePath,
-      }),
+  /** Publica job na lista Redis; o consumidor Python grava o transcript no Postgres. */
+  private async enqueueTranscribeJob(record: Video): Promise<void> {
+    const payload = JSON.stringify({
+      video_id: record.id,
+      relative_path: record.relativePath,
     });
-    if (!res.ok) {
-      return;
-    }
-    const body = (await res.json()) as { transcript?: string };
-    if (body.transcript) {
-      record.transcript = body.transcript;
-      await this.videoRepo.save(record);
-    }
+    await this.redis.lpush(TRANSCRIBE_QUEUE_KEY, payload);
+    this.logger.log(`Job de transcrição enfileirado para vídeo ${record.id}`);
   }
 
   /**

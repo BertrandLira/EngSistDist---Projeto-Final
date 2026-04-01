@@ -21,6 +21,20 @@ export class Video {
   @Column({ name: 'scene_description', type: 'text', nullable: true })
   sceneDescription: string | null;
 
+  @Column({ name: 'transcript_mode', type: 'varchar', length: 16, nullable: true })
+  transcriptMode: string | null;
+
+  @Column({ name: 'transcript_generated_at', type: 'timestamptz', nullable: true })
+  transcriptGeneratedAt: Date | null;
+
+  /** JSONB no Postgres; evitar `unknown[]` com emitDecoratorMetadata (reflect → Object). */
+  @Column({ name: 'transcript_generation_log', type: 'jsonb', nullable: true })
+  transcriptGenerationLog: object | null;
+
+  /** queued | processing | completed | failed */
+  @Column({ name: 'transcript_job_status', type: 'varchar', length: 16, nullable: true })
+  transcriptJobStatus: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

@@ -45,6 +45,15 @@ class AIProvider(ABC):
         ...
 
     @abstractmethod
+    def generate_questions_with_raw(
+        self,
+        transcript: str,
+        scene_description: str,
+        count: int = 5,
+    ) -> tuple[list[dict], str, str]:
+        """Retorna (perguntas parseadas, prompt completo, resposta bruta do modelo)."""
+
+    @abstractmethod
     def generate_embedding(self, text: str) -> list[float]:
         ...
 
@@ -57,6 +66,12 @@ class OpenAIProvider(AIProvider):
         self.embedding_model = "text-embedding-ada-002"
 
     def generate_questions(self, transcript: str, scene_description: str, count: int = 5) -> list[dict]:
+        questions, _, _ = self.generate_questions_with_raw(transcript, scene_description, count)
+        return questions
+
+    def generate_questions_with_raw(
+        self, transcript: str, scene_description: str, count: int = 5
+    ) -> tuple[list[dict], str, str]:
         prompt = QUESTION_PROMPT.format(
             count=count,
             transcript=transcript or "(sem transcrição)",
@@ -68,7 +83,7 @@ class OpenAIProvider(AIProvider):
             temperature=0.7,
         )
         raw = response.choices[0].message.content.strip()
-        return _parse_questions_json(raw)
+        return _parse_questions_json(raw), prompt, raw
 
     def generate_embedding(self, text: str) -> list[float]:
         response = self.client.embeddings.create(
@@ -86,6 +101,12 @@ class GeminiProvider(AIProvider):
         self.embedding_model = "gemini-embedding-001"
         
     def generate_questions(self, transcript: str, scene_description: str, count: int = 5) -> list[dict]:
+        questions, _, _ = self.generate_questions_with_raw(transcript, scene_description, count)
+        return questions
+
+    def generate_questions_with_raw(
+        self, transcript: str, scene_description: str, count: int = 5
+    ) -> tuple[list[dict], str, str]:
         prompt = QUESTION_PROMPT.format(
             count=count,
             transcript=transcript or "(sem transcrição)",
@@ -96,7 +117,7 @@ class GeminiProvider(AIProvider):
             contents=prompt,
         )
         raw = response.text.strip()
-        return _parse_questions_json(raw)
+        return _parse_questions_json(raw), prompt, raw
 
     def generate_embedding(self, text: str) -> list[float]:
         result = self.client.models.embed_content(

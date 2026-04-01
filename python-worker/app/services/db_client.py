@@ -4,6 +4,7 @@ Cliente Postgres para salvar perguntas geradas na tabela challenges.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -17,6 +18,114 @@ logger = logging.getLogger(__name__)
 
 def _get_connection():
     return psycopg2.connect(settings.database_url)
+
+
+def set_transcript_job_status(video_id: str, status: str) -> None:
+    """Atualiza transcript_job_status (queued|processing|completed|failed)."""
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos SET transcript_job_status = %s WHERE id = %s::uuid
+                """,
+                (status, video_id),
+            )
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Erro ao atualizar transcript_job_status")
+        raise
+    finally:
+        conn.close()
+
+
+def update_video_transcript_full(
+    video_id: str,
+    transcript: str,
+    mode: str,
+    log_entries: list[dict],
+    scene_description: str | None = None,
+) -> None:
+    """Persiste transcript, modo, status completed e append ao log JSON (auditoria)."""
+    text = transcript if transcript is not None else ""
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            if scene_description is not None:
+                cur.execute(
+                    """
+                    UPDATE videos SET
+                      transcript = %s,
+                      transcript_mode = %s,
+                      scene_description = %s,
+                      transcript_generated_at = NOW(),
+                      transcript_job_status = 'completed',
+                      transcript_generation_log = COALESCE(transcript_generation_log, '[]'::jsonb) || %s::jsonb
+                    WHERE id = %s::uuid
+                    """,
+                    (text, mode, scene_description, json.dumps(log_entries), video_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE videos SET
+                      transcript = %s,
+                      transcript_mode = %s,
+                      transcript_generated_at = NOW(),
+                      transcript_job_status = 'completed',
+                      transcript_generation_log = COALESCE(transcript_generation_log, '[]'::jsonb) || %s::jsonb
+                    WHERE id = %s::uuid
+                    """,
+                    (text, mode, json.dumps(log_entries), video_id),
+                )
+            if cur.rowcount == 0:
+                logger.warning("update_video_transcript_full: vídeo %s não encontrado", video_id)
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Erro ao atualizar transcript")
+        raise
+    finally:
+        conn.close()
+
+
+def update_video_transcript(video_id: str, transcript: str) -> None:
+    """Compat: só transcript + modo atual do env e log mínimo."""
+    from app.core.config import settings
+
+    update_video_transcript_full(
+        video_id,
+        transcript,
+        settings.transcribe_mode,
+        [{"event": "legacy", "message": "update_video_transcript"}],
+    )
+
+
+def insert_ai_question_generation_log(
+    video_id: str,
+    provider: str,
+    model: str | None,
+    prompt: str,
+    response_raw: str,
+) -> None:
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ai_question_generation_logs (video_id, provider, model, prompt, response_raw)
+                VALUES (%s::uuid, %s, %s, %s, %s)
+                """,
+                (video_id, provider, model or "", prompt, response_raw),
+            )
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Erro ao inserir ai_question_generation_logs")
+        raise
+    finally:
+        conn.close()
 
 
 def get_video(video_id: str) -> dict | None:

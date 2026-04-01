@@ -9,7 +9,7 @@ export class StaticFallbackQuestion {
   prompt: string;
 
   @Column({ type: 'jsonb', nullable: true })
-  options: string[] | null;
+  options: object | null;
 
   @Column({ type: 'text', nullable: true })
   answer: string | null;
