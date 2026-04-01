@@ -8,6 +8,7 @@ import { StaticFallbackQuestion } from '../database/entities/static-question.ent
 import { RabbitMQModule } from '../rabbitmq/rabbitmq.module';
 import { ChallengeDeliveryEvent } from '../database/entities/challenge-delivery-event.entity';
 import { DeliveryEventsService } from './delivery-events.service';
+import { RabbitMQService } from 'src/rabbitmq/rabbitmq.service';
 
 @Module({
   imports: [
@@ -20,7 +21,7 @@ import { DeliveryEventsService } from './delivery-events.service';
     RabbitMQModule,
   ],
   controllers: [ChallengesController],
-  providers: [ChallengesService, DeliveryEventsService],
+  providers: [ChallengesService, DeliveryEventsService, RabbitMQService],
   exports: [ChallengesService],
 })
 export class ChallengesModule {}
