@@ -1,12 +1,12 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PoolService } from '../pool/pool.service';
-import { RabbitMQService } from '../rabbitmq/rabbitmq.service';
 import { Challenge } from '../database/entities/challenge.entity';
 import { StaticFallbackQuestion } from '../database/entities/static-question.entity';
 import { QuestionItemDto } from './dto/push-questions.dto';
 import { DeliveryEventsService } from './delivery-events.service';
+import { RabbitMQService } from '../rabbitmq/rabbitmq.service';
 
 export interface ChallengeResponse {
   id: string;
@@ -28,17 +28,10 @@ export class ChallengesService {
     private readonly staticRepo: Repository<StaticFallbackQuestion>,
 
     private readonly pool: PoolService,
-
-    private readonly rabbit: RabbitMQService,
     private readonly deliveryEvents: DeliveryEventsService,
+    private readonly rabbit: RabbitMQService,
   ) {}
 
-  /**
-   * Retorna o próximo desafio para um vídeo usando Circuit Breaker:
-   * 1º Redis Pool
-   * 2º DB / Vector
-   * 3º Static fallback
-   */
   async getChallenge(videoId: string): Promise<ChallengeResponse> {
     let result: ChallengeResponse;
 
@@ -47,54 +40,42 @@ export class ChallengesService {
       const pooled = await this.pool.popQuestion(videoId);
 
       if (pooled) {
-        this.logger.log(`[CB] source=pool video=${videoId}`);
 
-        // verifica tamanho do pool
-        try {
-          const poolSize = await this.pool.getPoolSize(videoId);
-
-          if (poolSize < 3) {
-            this.logger.log(
-              `Pool baixo (${poolSize}) → solicitando geração de desafios`,
-            );
-
-            await this.rabbit.publish({
-              videoId,
-              amount: 5,
-            });
-          }
-        } catch (err) {
-          this.logger.warn(`Erro ao verificar tamanho do pool: ${err}`);
-        }
+        this.logger.log(`[CB] source=pool  video=${videoId}`);
 
         void this.markChallengeConsumed(pooled.id);
+
+        const size = await this.pool.getPoolSize(videoId);
+
+        // 👇 dispara geração se pool estiver baixo
+        if (size < 3) {
+          await this.rabbit.publish({
+            videoId,
+            amount: 5,
+          });
+
+          this.logger.log(`Pool baixo (${size}), solicitando geração via RabbitMQ`);
+        }
+
         result = { ...pooled, source: 'pool' };
+
         void this.deliveryEvents.record(videoId, result);
+
         return result;
       }
+
     } catch (err) {
       this.logger.warn(`[CB] Redis indisponível, pulando pool: ${err}`);
     }
 
-    // Pool vazio → pedir geração
-    try {
-      this.logger.warn(`Pool vazio → solicitando geração de desafios`);
-
-      await this.rabbit.publish({
-        videoId,
-        amount: 5,
-      });
-    } catch (err) {
-      this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
-    }
-
-    // --- Camada 2: DB / Vector Search ---
+    // --- Camada 2: DB / Vector ---
     const dbChallenge = await this.findUnusedChallenge(videoId);
 
     if (dbChallenge) {
       this.logger.log(`[CB] source=vector video=${videoId}`);
 
       void this.markChallengeConsumed(dbChallenge.id);
+
       result = {
         id: dbChallenge.id,
         question: dbChallenge.prompt,
@@ -102,7 +83,15 @@ export class ChallengesService {
         answer: dbChallenge.answer ?? '',
         source: 'vector',
       };
+
       void this.deliveryEvents.record(videoId, result);
+
+      // 🔹 mesmo assim já pede mais perguntas
+      await this.rabbit.publish({
+        videoId,
+        amount: 5,
+      });
+
       return result;
     }
 
@@ -110,14 +99,19 @@ export class ChallengesService {
     this.logger.warn(
       `[CB] OPEN — pool e DB vazios, usando fallback estático para video=${videoId}`,
     );
+
     result = await this.getStaticFallback();
     void this.deliveryEvents.record(videoId, result);
+
+    // 🔹 importante: pedir geração de perguntas
+    await this.rabbit.publish({
+      videoId,
+      amount: 5,
+    });
+
     return result;
   }
 
-  /**
-   * Recebe perguntas geradas pelo worker, salva no banco e empurra para o Redis
-   */
   async pushQuestionsToPool(
     videoId: string,
     questions: QuestionItemDto[],
@@ -167,9 +161,7 @@ export class ChallengesService {
     return { pushed };
   }
 
-  async getPoolSize(
-    videoId: string,
-  ): Promise<{ videoId: string; size: number }> {
+  async getPoolSize(videoId: string): Promise<{ videoId: string; size: number }> {
     try {
       const size = await this.pool.getPoolSize(videoId);
       return { videoId, size };
@@ -216,12 +208,7 @@ export class ChallengesService {
     }
 
     const skip = Math.floor(Math.random() * count);
-
-    const results = await this.staticRepo.find({
-      skip,
-      take: 1,
-    });
-
+    const results = await this.staticRepo.find({ skip, take: 1 });
     const q = results[0];
 
     return {

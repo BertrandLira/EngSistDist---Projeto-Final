@@ -1,15 +1,73 @@
 import pika
 import json
+import requests
 
-def generate_challenge(video_id):
-    print(f"Gerando desafio para vídeo {video_id}")
-    # aqui vai sua lógica de IA
+from app.services.ai_service import get_ai_provider
+
+API_URL = "http://nestjs-api:4000/challenges/pool"
+
+ai = get_ai_provider()
+
+
+def generate_challenge(video_id, count=5):
+
+    print(f"Gerando {count} perguntas para vídeo {video_id}")
+
+    # nesse exemplo não temos transcript/scene
+    transcript = ""
+    scene_description = ""
+
+    questions = ai.generate_questions(
+        transcript=transcript,
+        scene_description=scene_description,
+        count=count
+    )
+
+    result = []
+
+    for q in questions:
+
+        question_text = q["prompt"]
+
+        embedding = ai.generate_embedding(question_text)
+
+        result.append({
+            "question": question_text,
+            "options": q["options"],
+            "answer": q["answer"],
+            "embedding": embedding
+        })
+
+    return result
+
+
+def send_to_api(video_id, questions):
+
+    payload = {
+        "videoId": video_id,
+        "questions": questions
+    }
+
+    try:
+
+        response = requests.post(
+            f"{API_URL}/{video_id}/questions",
+            json={
+                "questions": questions
+            }
+        )
+
+        print("Perguntas enviadas:", response.status_code)
+
+    except Exception as e:
+
+        print("Erro enviando para API:", e)
 
 
 def start_worker():
 
     connection = pika.BlockingConnection(
-        pika.ConnectionParameters("rabbitmq")
+        pika.ConnectionParameters(host="localhost")
     )
 
     channel = connection.channel()
@@ -28,8 +86,11 @@ def start_worker():
         try:
 
             video_id = data["videoId"]
+            amount = data.get("amount", 5)
 
-            generate_challenge(video_id)
+            questions = generate_challenge(video_id, amount)
+
+            send_to_api(video_id, questions)
 
             ch.basic_ack(
                 delivery_tag=method.delivery_tag
@@ -51,3 +112,7 @@ def start_worker():
     print("Worker iniciado...")
 
     channel.start_consuming()
+
+
+if __name__ == "__main__":
+    start_worker()

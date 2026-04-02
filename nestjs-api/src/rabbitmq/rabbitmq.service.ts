@@ -1,8 +1,15 @@
+import { Injectable, OnModuleInit } from "@nestjs/common";
 import * as amqp from "amqplib";
 
-export class RabbitMQService {
+@Injectable()
+export class RabbitMQService implements OnModuleInit {
   private connection!: amqp.ChannelModel;
   private channel!: amqp.Channel;
+
+  async onModuleInit() {
+    await this.connect();
+    console.log("RabbitMQ conectado");
+  }
 
   async connect() {
     this.connection = await amqp.connect("amqp://rabbitmq:5672");
