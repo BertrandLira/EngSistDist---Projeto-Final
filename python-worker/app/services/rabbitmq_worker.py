@@ -93,23 +93,6 @@ def start_worker():
             # Gera e salva no Postgres
             generate_challenge(video_id, amount)
 
-            # Opcional: Poderíamos chamar a API NestJS para forçar o push pro Redis,
-            # mas o NestJS já busca no DB se o pool estiver vazio, e o próximo 
-            # push manual via dashboard ou api também resolveria.
-            # No entanto, a implementação atual do NestJS pushQuestionsToPool 
-            # é a que popula o Redis. 
-            # Vou manter a chamada ao NestJS para garantir que o REDIS seja povoado.
-            
-            # send_to_api(video_id, questions) -> REVISAR: a API espera as questões.
-            # Mas generate_and_save_questions já salvou no Postgres.
-            # Se eu enviar pra API de novo, ela vai salvar de novo no Postgres?
-            # Sim, ChallengesService.pushQuestionsToPool salva no banco.
-            
-            # SOLUÇÃO: O question_service no worker salva no Postgres.
-            # A API NestJS deveria ter um endpoint "sync pool from db" ou algo assim.
-            # Mas para não mudar muito a API agora, vou deixar que o NestJS 
-            # busque do DB no próximo getChallenge.
-            
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception:
             logger.exception("Erro ao processar desafio via RabbitMQ")
