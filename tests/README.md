@@ -1,8 +1,10 @@
 # Plano de Testes e Estratégia de Validação
 
-Com o objetivo de avaliar o comportamento do sistema sob diferentes condições de uso e falha, foram definidos testes focados em carga, resiliência e tolerância a falhas. Esses testes buscam validar se a arquitetura proposta, baseada na geração assíncrona de desafios por Inteligência Artificial e no uso de fallback estático, mantém a disponibilidade do sistema mesmo em cenários adversos.
+Com o objetivo de avaliar o comportamento do sistema sob diferentes condições de uso e falha, foram definidos testes focados em carga, resiliência e tolerância a falhas. Esses testes buscam validar se a arquitetura proposta, baseada na geração de desafios por Inteligência Artificial e no uso de fallback estático, mantém a disponibilidade do sistema mesmo em cenários adversos.
 
 Para a execução dos experimentos foi utilizada a ferramenta de teste de carga k6, que permite simular múltiplos usuários virtuais realizando requisições simultâneas à API do sistema.
+
+O teste foi executado no endpoint responsável pelo consumo de desafios (`POST /videos/{videoId}/challenges`), simulando o comportamento real do usuário ao iniciar a reprodução de um vídeo.
 
 ## Arquivos de Teste Criados
 
@@ -98,21 +100,35 @@ Essas métricas permitem avaliar tanto a performance quanto a resiliência do si
 
 ## Resultados do Teste de Carga
 
-| Métrica                      | Resultado  |
-| ---------------------------- | ---------- |
-| Requisições totais           | 971        |
-| Taxa de requisições          | 7.62 req/s |
-| Usuários virtuais máximos    | 100        |
-| Tempo médio de resposta      | 11.92 s    |
-| Mediana do tempo de resposta | 10.8 s     |
-| Percentil 95                 | 24.44 s    |
-| Taxa de erro                 | 1.02%      |
+| Métrica                      | Resultado   |
+| ---------------------------- | ----------- |
+| Requisições totais           | 20.119      |
+| Taxa de requisições          | 83.56 req/s |
+| Usuários virtuais máximos    | 500         |
+| Tempo médio de resposta      | 1.92 s      |
+| Mediana do tempo de resposta | 1.3 s       |
+| Percentil 95                 | 7 s         |
+| Percentil 90                 | 3.93 s      |
+| Tempo máximo                 | 10.87 s     |
+| Taxa de erro (HTTP)          | 0%          |
 
-Os resultados indicam que o sistema conseguiu processar a maior parte das requisições com sucesso, apresentando uma taxa de erro de aproximadamente 1%, considerada baixa para testes de carga.
+Os resultados indicam que o sistema conseguiu processar todas as requisições com sucesso, apresentando uma taxa de erro igual a 0%.
 
 Embora o tempo médio de resposta tenha aumentado sob carga, o sistema manteve-se estável e continuou respondendo às requisições, demonstrando capacidade de lidar com múltiplos usuários simultâneos.
 
 ## Resultados do Teste de Chaos Engineering
+
+| Métrica                      | Resultado   |
+| ---------------------------- | ----------- |
+| Requisições totais           | 11.211      |
+| Taxa de requisições          | 92.65 req/s |
+| Usuários virtuais máximos    | 100         |
+| Tempo médio de resposta      | 74.08 ms    |
+| Mediana do tempo de resposta | 8.93 ms     |
+| Percentil 95                 | 197.94 ms   |
+| Percentil 90                 | 72.77 ms    |
+| Tempo máximo                 | 15.23 s     |
+| Taxa de erro (HTTP)          | 0.02%       |
 
 Mesmo após a interrupção do worker de IA, o sistema continuou respondendo às requisições dos usuários. As requisições passaram a ser atendidas utilizando os desafios previamente armazenados no banco de dados.
 
@@ -120,17 +136,19 @@ Esse comportamento confirma que a geração de desafios por IA está desacoplada
 
 ## Resultados da Simulação de Ataque DoS
 
-| Métrica                      | Resultado   |
-| ---------------------------- | ----------- |
-| Requisições totais           | 1509        |
-| Taxa de requisições          | 10.38 req/s |
-| Usuários virtuais máximos    | 1000        |
-| Tempo médio de resposta      | 34.26 s     |
-| Mediana do tempo de resposta | 26.88 s     |
-| Percentil 95                 | 60 s        |
-| Taxa de erro                 | 43%         |
+| Métrica                      | Resultado    |
+| ---------------------------- | ------------ |
+| Requisições totais           | 17.952       |
+| Taxa de requisições          | 119.66 req/s |
+| Usuários virtuais máximos    | 10.000       |
+| Tempo médio de resposta      | 17.92 s      |
+| Mediana do tempo de resposta | 2.93 s       |
+| Percentil 95                 | 59.99 s      |
+| Percentil 90                 | 59.99 s      |
+| Tempo máximo                 | 60 s         |
+| Taxa de erro (HTTP)          | 37.13%       |
 
-Sob carga extrema foi observado um aumento significativo no tempo de resposta do sistema, indicando saturação de recursos. A taxa de erro também aumentou para aproximadamente 43%, demonstrando que parte das requisições não pôde ser processada.
+Sob carga extrema foi observado um aumento significativo no tempo de resposta do sistema, indicando saturação de recursos. A taxa de erro também aumentou para aproximadamente 37%, demonstrando que parte das requisições não pôde ser processada.
 
 Apesar da degradação de desempenho, o sistema permaneceu parcialmente operacional, continuando a atender uma parcela das requisições recebidas.
 
