@@ -1,38 +1,43 @@
 ## Diagramas C4 Nível 2 — Containers
 
+Mesmo modelo que o nível 1: **flowchart TB**, atores em linha, camadas por baixo (front → API → workers → dados), **LLM** ao lado dos workers para reduzir cruzamento de setas.
+
 ```mermaid
-C4Container
-title Sistema de desafios — containers (C4 nível 2)
-
-Person(jogador, "Usuário", "Browser; área pública.")
-Person(anunciante, "Anunciante", "Browser; área de upload.")
-System_Ext(llm, "API de LLM", "OpenAI ou Gemini.")
-
-Container_Boundary(sistema, "Sistema de desafios (Docker Compose)") {
-  Container(next, "nextjs-web", "Next.js", "UI :3000; anunciante e público.")
-  Container(nest, "nestjs-api", "NestJS", "API :4000; upload, stream, circuit breaker; volume video_data em /app/uploads.")
-  Container(fastapi, "fastapi-worker", "FastAPI", "HTTP :8000; jobs de IA; mesmo volume video_data em /app/media.")
-  Container(transcribe, "transcribe-worker", "Python", "Consome fila Redis; transcrição e disparo de geração.")
-  Container(aigen, "ai-generation-worker", "Python", "Consome RabbitMQ; repõe pool de desafios.")
-  ContainerDb(pg, "db", "PostgreSQL + pgvector", "Vídeos, desafios, fallback estático.")
-  ContainerDb(redis, "cache", "Redis", "Pool de desafios (LPOP) e fila de transcrição.")
-  ContainerQueue(rmq, "rabbitmq", "RabbitMQ", "Fila de refresh do pool.")
-}
-
-Rel(jogador, next, "Usa", "HTTPS")
-Rel(anunciante, next, "Usa", "HTTPS")
-Rel(next, nest, "Chama API", "HTTP JSON")
-Rel(nest, pg, "Persistência", "TypeORM")
-Rel(nest, redis, "Pool e jobs", "Redis protocol")
-Rel(nest, rmq, "Publica refresh", "AMQP")
-Rel(nest, fastapi, "Proxy jobs", "HTTP")
-Rel(transcribe, redis, "Consome / publica jobs", "Redis")
-Rel(transcribe, pg, "Atualiza vídeos", "SQL")
-Rel(transcribe, llm, "Transcrição quando configurada", "HTTPS")
-Rel(aigen, rmq, "Consome tarefas", "AMQP")
-Rel(aigen, llm, "Gera perguntas", "HTTPS")
-Rel(aigen, pg, "Grava desafios", "SQL")
-Rel(aigen, redis, "Empurra pool", "Redis")
-Rel(fastapi, llm, "Gera perguntas", "HTTPS")
-Rel(fastapi, pg, "Lê e grava", "SQL")
+flowchart TB
+  subgraph atores [Atores]
+    direction LR
+    jogador["Usuário — browser, área pública."]
+    anunciante["Anunciante — browser, área de upload."]
+  end
+  next["nextjs-web — Next.js, UI :3000"]
+  nest["nestjs-api — NestJS :4000; upload, stream, circuit breaker; video_data em /app/uploads."]
+  subgraph workers_ia [Workers Python — mesma imagem, comandos distintos — e IA externa]
+    direction LR
+    fastapi["fastapi-worker — HTTP :8000; jobs de IA; video_data em /app/media."]
+    transcribe["transcribe-worker — Redis; transcrição e geração inicial."]
+    aigen["ai-generation-worker — RabbitMQ; repõe pool."]
+    llm["API de LLM (externo) — OpenAI ou Gemini"]
+  end
+  subgraph dados [Persistência e mensagens]
+    direction LR
+    pg[("db — PostgreSQL + pgvector; vídeos, desafios, fallback estático.")]
+    redis[("cache — Redis; pool LPOP e fila de transcrição.")]
+    rmq[("rabbitmq — fila de refresh do pool.")]
+  end
+  jogador -->|"HTTPS"| next
+  anunciante -->|"HTTPS"| next
+  next -->|"REST JSON"| nest
+  nest -->|"TypeORM"| pg
+  nest -->|"pool e jobs"| redis
+  nest -->|"publica refresh"| rmq
+  nest -->|"proxy jobs"| fastapi
+  transcribe -->|"consome / publica jobs"| redis
+  transcribe -->|"atualiza vídeos"| pg
+  transcribe -->|"transcrição se configurada"| llm
+  aigen -->|"consome tarefas"| rmq
+  aigen -->|"gera perguntas"| llm
+  aigen -->|"grava desafios"| pg
+  aigen -->|"empurra pool"| redis
+  fastapi -->|"gera perguntas"| llm
+  fastapi -->|"lê e grava"| pg
 ```
