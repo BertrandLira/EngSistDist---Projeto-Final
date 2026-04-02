@@ -12,12 +12,25 @@ export class RabbitMQService implements OnModuleInit {
   }
 
   async connect() {
-    this.connection = await amqp.connect("amqp://rabbitmq:5672");
-    this.channel = await this.connection.createChannel();
+    let retries = 10;
+    while (retries > 0) {
+      try {
+        this.connection = await amqp.connect("amqp://rabbitmq:5672");
+        this.channel = await this.connection.createChannel();
 
-    await this.channel.assertQueue("challenge_generation", {
-      durable: true,
-    });
+        await this.channel.assertQueue("challenge_generation", {
+          durable: true,
+        });
+        return;
+      } catch (err) {
+        retries--;
+        console.error(
+          `Erro ao conectar no RabbitMQ (tentativa ${10 - retries}/10): ${err.message}`,
+        );
+        if (retries === 0) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+    }
   }
 
   async publish(message: any) {

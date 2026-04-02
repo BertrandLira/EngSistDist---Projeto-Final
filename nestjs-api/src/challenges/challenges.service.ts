@@ -32,6 +32,7 @@ export class ChallengesService {
 
   async getChallenge(videoId: string): Promise<ChallengeResponse> {
     let result: ChallengeResponse;
+    const REFRESH_THRESHOLD = 2;
 
     // --- Camada 1: Redis Pool ---
     try {
@@ -45,18 +46,17 @@ export class ChallengesService {
         result = { ...pooled, source: 'pool' };
         void this.deliveryEvents.record(videoId, result);
 
-        // chama RabbitMQ MESMO com pool não vazio
+        // Estratégia de Refresh: se o pool está ficando vazio, pede mais
         try {
-          await this.rabbit.publish({
-            videoId,
-            amount: 5,
-          });
-
-          this.logger.log(
-            `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=pool)`,
-          );
+          const poolSize = await this.pool.getPoolSize(videoId);
+          if (poolSize < REFRESH_THRESHOLD) {
+            this.logger.log(
+              `Pool ficando baixo (${poolSize} < ${REFRESH_THRESHOLD}) para video=${videoId}. Solicitando mais.`,
+            );
+            await this.rabbit.publish({ videoId, amount: 5 });
+          }
         } catch (err) {
-          this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
+          this.logger.warn(`Falha ao verificar pool para refresh: ${err}`);
         }
 
         return result;
@@ -83,15 +83,11 @@ export class ChallengesService {
 
       void this.deliveryEvents.record(videoId, result);
 
-      // chama RabbitMQ mesmo vindo do DB
+      // Pool está vazio se chegamos aqui, solicita refresh
       try {
-        await this.rabbit.publish({
-          videoId,
-          amount: 5,
-        });
-
+        await this.rabbit.publish({ videoId, amount: 5 });
         this.logger.log(
-          `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=vector)`,
+          `Pool vazio, solicitação enviada para video=${videoId} (source=vector)`,
         );
       } catch (err) {
         this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
@@ -108,15 +104,11 @@ export class ChallengesService {
     result = await this.getStaticFallback();
     void this.deliveryEvents.record(videoId, result);
 
-    // chama RabbitMQ também no fallback
+    // Pool e DB vazios, solicita refresh urgente
     try {
-      await this.rabbit.publish({
-        videoId,
-        amount: 5,
-      });
-
+      await this.rabbit.publish({ videoId, amount: 5 });
       this.logger.log(
-        `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=static)`,
+        `Pool/DB vazios, solicitação enviada para video=${videoId} (source=static)`,
       );
     } catch (err) {
       this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);

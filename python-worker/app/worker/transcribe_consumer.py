@@ -89,6 +89,15 @@ def run_loop() -> None:
                 mode,
                 len(text),
             )
+
+            # --- Geração automática do pool inicial de perguntas ---
+            try:
+                from app.services.question_service import generate_and_save_questions
+                logger.info("Iniciando geração automática do pool inicial para vídeo %s", video_id)
+                generate_and_save_questions(video_id, count=5)
+                logger.info("Pool inicial gerado com sucesso para vídeo %s", video_id)
+            except Exception:
+                logger.exception("Falha na geração automática do pool inicial para %s", video_id)
         except Exception:
             logger.exception("Falha ao processar job %s", video_id)
             try:
