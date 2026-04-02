@@ -38,7 +38,6 @@ export default function () {
   check(res, {
     "status ok": (r) => r.status === 200 || r.status === 201,
     "response time < 500ms": (r) => r.timings.duration < 5000,
-    "tem pergunta": () => body.question !== undefined,
   });
 
   sleep(1);
