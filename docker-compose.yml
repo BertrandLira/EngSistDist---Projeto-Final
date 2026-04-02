@@ -25,6 +25,7 @@ services:
     container_name: nestjs_api
     ports:
       - "4000:4000"
+
     volumes:
       - ./nestjs-api:/app
       - /app/node_modules
@@ -138,6 +139,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
 
 volumes:
   video_data:
