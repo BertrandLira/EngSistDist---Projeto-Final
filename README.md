@@ -1,80 +1,95 @@
 # 🎯 Gerador de Desafios de Retenção (POC 4 - IA como Pool)
 
-**Disciplina:** Engenharia de Sistemas Distribuídos – 2025.2 (UFPB) 
-**Equipe:** 
+**Disciplina:** Engenharia de Sistemas Distribuídos – 2025.2 (UFPB)  
+**Equipe:**
 
 Ana Gabriela, André Soares, Bertrand Lira, Guilherme Muniz, Felipe Lima, Mateus Freitas.
 
 ---
 
 ## 📋 Visão Geral
-Este projeto consiste em um motor de retenção focado em geração de desafios e perguntas sobre conteúdos de vídeos de anunciantes. O diferencial arquitetural é provar que a geração de desafios por Inteligência Artificial pode ser desacoplada do fluxo crítico do usuário. A IA opera alimentando um pool assíncrono e, caso a geração em tempo real falhe ou o pool esgote, o sistema utiliza um banco de dados estático como fallback, garantindo resiliência e disponibilidade contínua.
+
+Este projeto consiste em um motor de retenção focado em geração de desafios e perguntas sobre conteúdos de vídeos de anunciantes. O diferencial arquitetural é provar que a geração de desafios por Inteligência Artificial pode ser desacoplada do fluxo crítico do usuário. A IA opera em **workers assíncronos**, alimentando um **pool em Redis**; a API NestJS entrega desafios de forma síncrona ao front. Se o pool esgotar ou serviços auxiliares falharem, o sistema recorre a desafios já persistidos no **Postgres** e, por fim, a um **fallback estático** (tabela de perguntas genéricas), garantindo resiliência.
 
 ### Funcionalidades Principais
-* **Geração Assíncrona:** Um worker gera continuamente perguntas sobre os vídeos usando o modelo deployado e as armazena no pool.
-* **Consumo em Tempo Real e Busca Semântica:** O motor consome os desafios do pool. Para perguntas repetitivas ou vídeos similares, utiliza busca vetorial por similaridade.
-* **Fallback de Segurança:** Se o pool esgotar ou a IA ficar indisponível, o motor faz o fallback para perguntas pré-aprovadas no banco estático.
+
+* **Geração assíncrona:** Workers Python (transcrição via fila Redis; refresh do pool via RabbitMQ) geram perguntas com **Gemini ou OpenAI** (`AI_PROVIDER`), persistem no Postgres e empurram o pool no Redis.
+* **Consumo em tempo real:** A API consome o pool (FIFO por vídeo). Os desafios incluem **embeddings no Postgres (pgvector)**; a busca avançada por similaridade entre vídeos é evolução planejada (hoje a camada de banco prioriza desafios do vídeo corrente).
+* **Fallback de segurança:** Se o Redis estiver indisponível ou vazio e não houver desafio útil no banco, o motor usa perguntas pré-carregadas na tabela de **fallback estático**.
 
 ---
 
 ## 🏗️ Arquitetura (Diagrama C4)
 
-[Diagrama Nível 1](Diagrams\DiagramaC4N1.pdf)
-
-[Diagrama Nível 2](Diagrams\DiagramaC4N2.pdf)
+* [Diagrama Nível 1](Diagrams/DiagramaC4N1.md) 
+* [Diagrama Nível 2](Diagrams/DiagramaC4N2.md) 
 
 ---
 
 ## 📜 ADRs (Architecture Decision Records)
 
 ### ADR 01: Desacoplamento da Geração de IA via Pool Assíncrono
+
 * **Contexto:** A geração de perguntas por IA tem alta latência (segundos) e depender dela de forma síncrona degradaria a experiência do usuário (retenção exige rapidez).
-* **Decisão:** A IA não será chamada na hora em que o usuário abre o vídeo. A API (Fargate) consumirá perguntas pré-geradas de um pool no banco de dados (pg_vector). O cluster EC2 (GPU) trabalhará de forma assíncrona apenas para manter o pool cheio.
-* **Consequência:** Latência mínima para o usuário. Maior complexidade em gerenciar o tamanho do pool e métricas de refresh.
+* **Decisão:** A IA **não** é chamada no momento em que o usuário pede um desafio. A API NestJS consome primeiro um **pool em Redis** (pré-preenchido). Workers Python mantêm o pool e o banco: após transcrição, geração inicial; quando o pool baixa, **RabbitMQ** dispara novos lotes. O Postgres (com **pgvector**) guarda desafios e embeddings.
+* **Consequência:** Latência baixa na entrega ao usuário. Maior complexidade em filas, observabilidade e política de refresh do pool.
 
 ### ADR 02: Fallback Estático e Circuit Breaker
-* **Contexto:** Instâncias EC2 com GPU podem falhar, escalar lentamente ou o pool pode secar se o vídeo viralizar de repente.
-* **Decisão:** Implementar padrão Circuit Breaker no consumo do pool. Se o pool vetorial estiver vazio ou a API da IA estiver fora, o motor puxa automaticamente perguntas genéricas do banco relacional tradicional (Amazon RDS).
-* **Consequência:** O sistema nunca para de exibir desafios (alta disponibilidade do negócio), mas os desafios de fallback podem ser menos personalizados em caso de crise.
+
+* **Contexto:** O pool pode esvaziar, o Redis ou o worker podem falhar, ou a API de IA pode ficar indisponível.
+* **Decisão:** Implementar consumo em **cascata**: pool Redis → desafios no **Postgres** para o vídeo → **perguntas estáticas** genéricas. Falhas transitórias no Redis não bloqueiam o fluxo (pula-se para o banco).
+* **Consequência:** O sistema continua a exibir desafios; em degradação, menos personalização.
 
 ---
 
-## 🛠️ Padrões Arquiteturais Aplicados 
-1. **ASYNC Geração / SYNC Consumo:** Separação clara entre a esteira pesada de IA (assíncrona) e a entrega para o usuário (síncrona).
-2. **Circuit Breaker & Fallback:** Proteção do fluxo crítico do usuário contra falhas do cluster de GPU ou exaustão do pool, acionando o banco RDS estático.
-3. **Cache-Aside / Vector Search:** O motor primeiro busca no pg_vector por similaridade (cache de contexto). Se não achar, agenda a criação
-4. **Retry Pattern:** Tentativas de reconexão automática em falhas transientes.
+## 🛠️ Padrões Arquiteturais Aplicados
+
+1. **ASYNC geração / SYNC consumo:** Separação entre esteira pesada (transcrição, IA, filas) e entrega ao usuário (HTTP via Nest + Next).
+2. **Circuit breaker em camadas:** Proteção do fluxo crítico contra esgotamento do pool ou indisponibilidade do Redis, com degradação controlada até ao fallback estático.
+3. **Cache-aside (pool Redis) + persistência:** O motor prioriza o pool rápido; o Postgres é a camada seguinte, com embeddings para evolução de busca por similaridade.
+4. **Retry pattern:** Reconexão e resiliência nos workers (por exemplo fila RabbitMQ) e healthchecks no Docker Compose.
 
 ---
 
-## 💻Stack Tecnológica e Justificativas
-1. **Computação da API (Motor): AWS Fargate (Serverless).** Justificativa: Permite focar na lógica do motor de consumo sem gerenciar servidores, escalando rapidamente em picos de acessos de usuários assistindo aos vídeos.
+## 💻 Stack Tecnológica e Justificativas
 
-2. Modelo de IA: EC2 Autoscaling Group (Instâncias com GPU). Justificativa: Modelos LLM exigem aceleração por hardware (GPU). O Autoscaling permite que as instâncias liguem apenas quando a fila de novos sintomas crescer, otimizando o alto custo financeiro de instâncias com GPU.
+1. **Interface:** **Next.js** (App Router) — áreas **anunciante** e **pública**; consome a API Nest no browser e no servidor conforme variáveis de ambiente.
+2. **API principal:** **NestJS** — upload multipart, metadados e transcrição orquestrados com **TypeORM** e **Postgres**, stream de vídeo com suporte a **Range (206)**, endpoint de desafios com circuit breaker e integração Redis / RabbitMQ / worker Python.
+3. **Workers:** **Python (FastAPI)** — API HTTP para jobs (`/api/v1`); **consumidor Redis** para transcrição; **consumidor RabbitMQ** para repor o pool de IA; transcrição configurável (`TRANSCRIBE_MODE`: stub, Gemini, Whisper local, API OpenAI).
+4. **Dados:** **PostgreSQL (pgvector)** — vídeos, desafios, fallback estático; **Redis** — pool de desafios e fila de transcrição; **RabbitMQ** — mensagens de refresh do pool.
+5. **Execução local:** **Docker Compose** — serviços com healthchecks, volume **`video_data`** partilhado entre Nest e workers para os ficheiros `.mp4`.
 
-3. Banco de Dados Relacional e Fallback: Amazon RDS. Justificativa: Garante integridade transacional para os dados estáticos de fallback e configurações dos anunciantes com alta disponibilidade.
-
-4. Cache Inteligente: pg_vector (Busca de Similaridade). Justificativa: Substitui abordagens tradicionais de cache exato. Como as perguntas podem ter variações semânticas, o pg_vector permite recuperar desafios previamente gerados para contextos similares, poupando chamadas caras ao cluster de GPU.
+*Como referência de evolução em nuvem, o desenho da disciplina pode incluir Fargate, RDS e filas gerenciadas; neste repositório a POC corre em contentores locais.*
 
 ---
 
 ## 🏗️ Divisão de Responsabilidades
+
 Para garantir o domínio de todos os tópicos técnicos exigidos e a participação equitativa no videocast, a equipe foi dividida conforme as camadas da arquitetura distribuída:
 
 | Integrante | Papel Técnico | Atribuição Principal (Inicialmente) |
 | :--- | :--- | :--- |
-| **Mateus Freitas** | **Backend Lead** | Criar a API e a lógica de Fallback  |
-| **Bertrand Lira** | **IA Engineer** | Conectar o sistema com o GPT para gerar desafios. |
-| **Felipe Lima** | **Data Engineer** | Cuidar do banco SQL e do Cache Redis. |
-| **Guilherme Muniz** | **Middleware Eng** |Configurar as filas do RabbitMQ. |
-| **André Soares** | **DevOps / SRE** | Fazer o Docker Compose e o setup do ambiente. |
-| **Ana Gabriela Maia** | **QA / Resiliency** | Plano de testes de carga, simulação de falhas de IA e validação do Circuit Breaker. |
+| **Mateus Freitas** | **Backend Lead** | Criar a API e a lógica de fallback |
+| **Bertrand Lira** | **IA Engineer** | Integração com APIs de IA (Gemini/OpenAI) para gerar desafios |
+| **Felipe Lima** | **Data Engineer** | Banco SQL (Postgres/pgvector), Redis e modelagem de desafios |
+| **Guilherme Muniz** | **Middleware Eng** | Filas RabbitMQ e fluxos assíncronos |
+| **André Soares** | **DevOps / SRE** | Docker Compose e setup do ambiente |
+| **Ana Gabriela Maia** | **QA / Resiliency** | Plano de testes de carga, simulação de falhas de IA e validação do circuit breaker |
 
 ---
 
 ## 🚀 Como Executar
+
 1. Clone o repositório.
-2. Crie um arquivo `.env` com sua `OPENAI_API_KEY`.
-3. Execute o comando:
+2. Copie [`.env.example`](.env.example) para **`.env`** na raiz e preencha pelo menos **`GEMINI_API_KEY`** e/ou **`OPENAI_API_KEY`**, conforme o `AI_PROVIDER` escolhido. Ajuste **`TRANSCRIBE_MODE`** se for usar transcrição real (local, Gemini ou API).
+3. Na raiz do projeto, execute:
+
    ```bash
-   docker-compose up --build -d
+   docker compose up --build -d
+   ```
+
+   *(Em ambientes mais antigos, o comando pode ser `docker-compose`.)*
+
+4. Abra **`http://localhost:3000`** (Next). A API Nest expõe **`http://localhost:4000`**; gestão RabbitMQ, se necessário, em **`http://localhost:15672`**.
+
+Detalhes de endpoints, fluxos e variáveis: [docs/README.md](docs/README.md).
