@@ -23,10 +23,8 @@ export class ChallengesService {
   constructor(
     @InjectRepository(Challenge)
     private readonly challengeRepo: Repository<Challenge>,
-
     @InjectRepository(StaticFallbackQuestion)
     private readonly staticRepo: Repository<StaticFallbackQuestion>,
-
     private readonly pool: PoolService,
     private readonly deliveryEvents: DeliveryEventsService,
     private readonly rabbit: RabbitMQService,
@@ -40,35 +38,34 @@ export class ChallengesService {
       const pooled = await this.pool.popQuestion(videoId);
 
       if (pooled) {
-
-        this.logger.log(`[CB] source=pool  video=${videoId}`);
+        this.logger.log(`[CB] source=pool video=${videoId}`);
 
         void this.markChallengeConsumed(pooled.id);
 
-        const size = await this.pool.getPoolSize(videoId);
+        result = { ...pooled, source: 'pool' };
+        void this.deliveryEvents.record(videoId, result);
 
-        // 👇 dispara geração se pool estiver baixo
-        if (size < 3) {
+        // chama RabbitMQ MESMO com pool não vazio
+        try {
           await this.rabbit.publish({
             videoId,
             amount: 5,
           });
 
-          this.logger.log(`Pool baixo (${size}), solicitando geração via RabbitMQ`);
+          this.logger.log(
+            `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=pool)`,
+          );
+        } catch (err) {
+          this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
         }
-
-        result = { ...pooled, source: 'pool' };
-
-        void this.deliveryEvents.record(videoId, result);
 
         return result;
       }
-
     } catch (err) {
       this.logger.warn(`[CB] Redis indisponível, pulando pool: ${err}`);
     }
 
-    // --- Camada 2: DB / Vector ---
+    // --- Camada 2: DB / Vector Search ---
     const dbChallenge = await this.findUnusedChallenge(videoId);
 
     if (dbChallenge) {
@@ -86,11 +83,19 @@ export class ChallengesService {
 
       void this.deliveryEvents.record(videoId, result);
 
-      // 🔹 mesmo assim já pede mais perguntas
-      await this.rabbit.publish({
-        videoId,
-        amount: 5,
-      });
+      // chama RabbitMQ mesmo vindo do DB
+      try {
+        await this.rabbit.publish({
+          videoId,
+          amount: 5,
+        });
+
+        this.logger.log(
+          `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=vector)`,
+        );
+      } catch (err) {
+        this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
+      }
 
       return result;
     }
@@ -103,11 +108,19 @@ export class ChallengesService {
     result = await this.getStaticFallback();
     void this.deliveryEvents.record(videoId, result);
 
-    // 🔹 importante: pedir geração de perguntas
-    await this.rabbit.publish({
-      videoId,
-      amount: 5,
-    });
+    // chama RabbitMQ também no fallback
+    try {
+      await this.rabbit.publish({
+        videoId,
+        amount: 5,
+      });
+
+      this.logger.log(
+        `Solicitação de geração enviada ao RabbitMQ para video=${videoId} (source=static)`,
+      );
+    } catch (err) {
+      this.logger.warn(`Erro ao publicar no RabbitMQ: ${err}`);
+    }
 
     return result;
   }
@@ -132,7 +145,6 @@ export class ChallengesService {
 
       if (q.embedding?.length) {
         const vectorLiteral = `[${q.embedding.join(',')}]`;
-
         await this.challengeRepo.query(
           `UPDATE challenges SET embedding = $1::vector WHERE id = $2`,
           [vectorLiteral, entity.id],
@@ -161,7 +173,9 @@ export class ChallengesService {
     return { pushed };
   }
 
-  async getPoolSize(videoId: string): Promise<{ videoId: string; size: number }> {
+  async getPoolSize(
+    videoId: string,
+  ): Promise<{ videoId: string; size: number }> {
     try {
       const size = await this.pool.getPoolSize(videoId);
       return { videoId, size };
