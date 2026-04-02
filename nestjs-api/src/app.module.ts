@@ -5,6 +5,7 @@ import { HealthModule } from "./health/health.module";
 import { RedisModule } from "./redis/redis.module";
 import { VideosModule } from "./videos/videos.module";
 import { ChallengesModule } from "./challenges/challenges.module";
+import { RabbitMQModule } from "./rabbitmq/rabbitmq.module";
 import { StatsModule } from "./stats/stats.module";
 
 @Module({
@@ -15,6 +16,7 @@ import { StatsModule } from "./stats/stats.module";
     HealthModule,
     VideosModule,
     ChallengesModule,
+    RabbitMQModule,
     StatsModule,
   ],
 })

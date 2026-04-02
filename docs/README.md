@@ -14,10 +14,12 @@ O [README principal](../README.md) na raiz continua sendo a visão da disciplina
 |--------|--------|-------|--------|
 | `nextjs-web` | `nextjs-app/` | 3000 | Interface: área **anunciante** (`/advertiser`) e **pública** (`/public`); chama a API Nest no browser (`NEXT_PUBLIC_API_URL`) e, no servidor, usa `INTERNAL_API_URL` para listar vídeos. |
 | `nestjs-api` | `nestjs-api/` | 4000 | API principal: upload multipart, **persistência em Postgres via TypeORM**, gravação no volume `video_data`, **stream HTTP** com suporte a `Range` (206), proxy de desafios ao worker. |
-| `fastapi-worker` | `python-worker/` | 8000 | API HTTP: **geração de perguntas** (Gemini/OpenAI), embeddings e persistência em `challenges`; opcionalmente `POST /jobs/transcribe` (mesmo pipeline da fila). |
-| `transcribe-worker` | `python-worker/` | — | **Consumidor Redis** (`BRPOP`): lê jobs `transcribe:jobs`, roda ffmpeg + transcrição (`TRANSCRIBE_MODE`: `stub` / `gemini` / `local` / `api`). Falhas → texto stub + evento `fallback_stub` no log JSON. |
-| `db` | — | 5432 | PostgreSQL com **pgvector** — schema com tabelas `videos`, `challenges` (pool IA) e `static_fallback_questions` (fallback). |
-| `cache` | — | 6379 | **Redis:** fila **LPUSH/BRPOP** `transcribe:jobs` entre Nest e `transcribe-worker`; cache-aside adicional pode ser evoluído depois. |
+| `fastapi-worker` | `python-worker/` | 8000 | API HTTP: **geração de perguntas** (Gemini/OpenAI), embeddings e persistência em `challenges`. |
+| `transcribe-worker` | `python-worker/` | — | **Consumidor Redis**: lê jobs `transcribe:jobs` e roda transcrição. Aciona a geração inicial de perguntas em background. |
+| `ai-generation-worker`| `python-worker/` | — | **Consumidor RabbitMQ**: lê pedidos de refresh de pool e gera blocos de 5 novas perguntas. |
+| `db` | — | 5432 | PostgreSQL com **pgvector** — schema com tabelas `videos`, `challenges` e `static_fallback_questions`. |
+| `cache` | — | 6379 | **Redis:** Fila de transcrição e **Pool de Desafios** (armazenamento temporário para consumo rápido). |
+| `rabbitmq`| — | 5672 | **RabbitMQ:** Broker de mensagens para tarefas assíncronas de manutenção do pool de IA. |
 
 ### Persistência Postgres
 
@@ -42,11 +44,10 @@ O worker suporta **dois providers**, controlados pela variável `AI_PROVIDER`:
 | `gemini` | `gemini-2.5-flash` | `gemini-embedding-001` | 3072 |
 | `openai` | `gpt-4o-mini` | `text-embedding-ada-002` | 1536 |
 
-Fluxo do endpoint `/jobs/questions`:
-1. Lê `transcript` e `scene_description` do vídeo no Postgres
-2. Monta prompt e chama o LLM para gerar perguntas de múltipla escolha
-3. Gera embeddings para cada pergunta
-4. Persiste tudo na tabela `challenges` com vetores pgvector
+Fluxo de Geração (Híbrido):
+1. **Pós-Upload**: O `transcribe-worker` dispara a geração inicial de 5 perguntas assim que termina a transcrição.
+2. **Consumo via Pool**: A NestJS retira as perguntas do Redis (`LPOP`).
+3. **Auto-Refresh**: Quando o pool atinge o limite de **2 perguntas**, a API dispara um evento via **RabbitMQ** para o `ai-generation-worker` repovoar o banco com mais 5 perguntas.
 
 ### Volume compartilhado
 
@@ -58,8 +59,11 @@ O **Next não monta** o volume de vídeos; o browser consome o stream via URL p�
 
 ### Fluxos implementados
 
-1. **Anunciante:** formulário em `/advertiser` envia `POST /videos/upload` (multipart) para a Nest; arquivo salvo no volume e linha em `videos` no Postgres; a Nest faz **LPUSH** em Redis (`transcribe:jobs`). O serviço **`transcribe-worker`** consome o job, transcreve conforme **`TRANSCRIBE_MODE`** (`stub`, **`gemini`** com `GEMINI_API_KEY`, `local` faster-whisper, `api` OpenAI `whisper-1`). Qualquer falha (quota, rede, ffmpeg, etc.) grava **texto stub genérico**, `transcript_mode=stub` e **`fallback_stub`** no JSON de auditoria.
-2. **Público:** `/public` lista `GET /videos` (SSR usando `INTERNAL_API_URL`). Cada item usa `<video src=...>` apontando para o stream da Nest. No **play**, o cliente chama `POST /videos/:id/challenges`, que repassa ao worker para gerar perguntas reais via IA; o resultado é exibido em **cards interativos** com opções clicáveis, feedback de acerto/erro e navegação entre perguntas.
+1. **Anunciante:** formulário em `/advertiser` envia `POST /videos/upload` (multipart); arquivo salvo e job para transcrição criado no Redis. O `transcribe-worker` processa o áudio, salva o `transcript` e **inicia automaticamente a primeira geração de desafios** via IA.
+2. **Público:** `/public` lista vídeos. No **play**, o cliente chama `POST /videos/:id/challenges`, que usa o **Circuit Breaker**:
+   - **Camada 1 (Pool/Fast)**: Tenta tirar do Redis (Pool). Se o pool baixar de 2 itens, aciona o RabbitMQ em background.
+   - **Camada 2 (DB/Vector)**: Se o Redis estiver vazio, busca do Postgres as perguntas geradas no upload.
+   - **Camada 3 (Fallback)**: Se nada existir, usa perguntas estáticas genéricas.
 
 ### Endpoints Nest (resumo)
 
@@ -110,19 +114,24 @@ flowchart TB
     Tr[Transcricao]
     Q[GeracaoPerguntas]
   end
+  subgraph rabbit [rabbitmq]
+    RMQ[Fila Refresh Desafios]
+  end
   Vol[(video_data)]
   PG[(Postgres_pgvector)]
-  Redis[(Redis)]
+  Redis[(Redis_Pool)]
   Adv -->|multipart_REST| Upload
   Pub -->|REST_lista_e_stream| Orch
   Upload --> Vol
   Upload --> PG
   Tr --> Vol
+  Tr -->|Auto Trigger| Q
   Q --> PG
   Orch --> PG
   Orch --> Redis
   Redis --> Tr
-  Orch -->|HTTP_interno| Q
+  Orch -->|Refresh Event| RMQ
+  RMQ --> Q
 ```
 
 *(Fluxo de upload: `Upload` grava arquivo e publica job em **Redis**; o processo de transcrição roda no container **transcribe-worker**, não mais via HTTP síncrono do Nest para o `/jobs/transcribe`.)*
@@ -205,8 +214,8 @@ docker compose --env-file .env.local up --build -d
 Em alinhamento com a separação de papéis descrita no [README.md principal](../README.md), os seguintes pontos ainda precisam ser implementados:
 
 ### 1. Mensageria Assíncrona (RabbitMQ ou evolução da fila Redis)
-- **Status:** Parcial — **fila Redis** (`transcribe:jobs`) já desacopla upload da transcrição.
-- **Descrição:** O README da equipe ainda menciona RabbitMQ; se for exigido na disciplina, pode coexistir com Redis (filas diferentes) ou substituir o broker conforme ADR.
+- **Status:** **Implementado** via RabbitMQ.
+- **Descrição:** Fila `challenge_generation` orquestra o refresh automático do pool de perguntas, garantindo que o tempo de resposta para o usuário seja instantâneo (visto que a IA trabalha em background).
 
 ### 2. Busca por Similaridade Vetorial Avançada (pgvector)
 - **Status:** Parcial (Embeddings estão sendo salvos).
@@ -224,9 +233,8 @@ Em alinhamento com a separação de papéis descrita no [README.md principal](..
 - **Descrição:** Armazenar no Redis transcrições e metadados que são lidos pelo Worker Python frequentemente para poupar chamadas repetitivas de extração textual no Postgres.
 
 ### 5. Padrão Retry e Observabilidade (Backoff Exponencial)
-- **Status:** Pendente.
-- **Responsável:** DevOps / Backend.
-- **Descrição:** Adicionar biblioteca robusta (ex: `@nestjs/bull` ou puro RxJS) para tentar reacessar serviços (banco, redis ou APIs pagas Gemini/OpenAI) caso tomem timeout, utilizando *backoff exponencial*.
+- **Status:** **Implementado** (RabbitMQ e Python Worker).
+- **Descrição:** Implementado loop de retry robusto na conexão dos workers com o RabbitMQ e healthcheck no Docker Compose para sincronizar o startup.
 
 ### 6. Transcrição de Áudio (Gemini / Whisper local / OpenAI)
 - **Status:** Implementado com **ffmpeg** + **`TRANSCRIBE_MODE`**: `stub`, `gemini` (multimodal + `GEMINI_API_KEY`; opcional `TRANSCRIBE_GEMINI_MODEL`), `local` (**faster-whisper**), `api` (OpenAI `whisper-1`). Em erro, **fallback stub** + log `fallback_stub`.
