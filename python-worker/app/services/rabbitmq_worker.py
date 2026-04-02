@@ -1,44 +1,28 @@
 import pika
 import json
 import requests
+import logging
 
 from app.services.ai_service import get_ai_provider
+
+logger = logging.getLogger(__name__)
 
 API_URL = "http://nestjs-api:4000/challenges/pool"
 
 ai = get_ai_provider()
 
 
+from app.services.question_service import generate_and_save_questions
+
 def generate_challenge(video_id, count=5):
-
-    print(f"Gerando {count} perguntas para vídeo {video_id}")
-
-    # nesse exemplo não temos transcript/scene
-    transcript = ""
-    scene_description = ""
-
-    questions = ai.generate_questions(
-        transcript=transcript,
-        scene_description=scene_description,
-        count=count
-    )
-
-    result = []
-
-    for q in questions:
-
-        question_text = q["prompt"]
-
-        embedding = ai.generate_embedding(question_text)
-
-        result.append({
-            "question": question_text,
-            "options": q["options"],
-            "answer": q["answer"],
-            "embedding": embedding
-        })
-
-    return result
+    """
+    Usa o shared service para gerar e salvar perguntas no Postgres.
+    """
+    logger.info(f"Processando RabbitMQ: Gerando {count} perguntas para vídeo {video_id}")
+    
+    # generate_and_save_questions já busca o transcript no DB e salva no Postgres
+    results = generate_and_save_questions(video_id, count=count)
+    return results
 
 
 def send_to_api(video_id, questions):
@@ -64,11 +48,32 @@ def send_to_api(video_id, questions):
         print("Erro enviando para API:", e)
 
 
-def start_worker():
+from app.core.config import settings
 
-    connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host="localhost")
-    )
+import time
+
+def start_worker():
+    max_retries = 10
+    retry_delay = 5
+    connection = None
+
+    for i in range(max_retries):
+        try:
+            logger.info("Tentativa de conexão RabbitMQ %d/%d em %s", i + 1, max_retries, settings.rabbitmq_url)
+            parameters = pika.URLParameters(settings.rabbitmq_url)
+            connection = pika.BlockingConnection(parameters)
+            logger.info("Conectado ao RabbitMQ com sucesso!")
+            break
+        except pika.exceptions.AMQPConnectionError as e:
+            logger.warning("Falha ao conectar ao RabbitMQ (tentativa %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("Máximo de tentativas atingido. Encerrando.")
+                raise
+
+    if not connection:
+        return
 
     channel = connection.channel()
 
@@ -78,31 +83,37 @@ def start_worker():
     )
 
     def callback(ch, method, properties, body):
-
         data = json.loads(body)
-
-        print("Mensagem recebida:", data)
+        logger.info("Mensagem RabbitMQ recebida: %s", data)
 
         try:
-
             video_id = data["videoId"]
             amount = data.get("amount", 5)
 
-            questions = generate_challenge(video_id, amount)
+            # Gera e salva no Postgres
+            generate_challenge(video_id, amount)
 
-            send_to_api(video_id, questions)
-
-            ch.basic_ack(
-                delivery_tag=method.delivery_tag
-            )
-
-        except Exception as e:
-
-            print("Erro:", e)
-
-            ch.basic_nack(
-                delivery_tag=method.delivery_tag
-            )
+            # Opcional: Poderíamos chamar a API NestJS para forçar o push pro Redis,
+            # mas o NestJS já busca no DB se o pool estiver vazio, e o próximo 
+            # push manual via dashboard ou api também resolveria.
+            # No entanto, a implementação atual do NestJS pushQuestionsToPool 
+            # é a que popula o Redis. 
+            # Vou manter a chamada ao NestJS para garantir que o REDIS seja povoado.
+            
+            # send_to_api(video_id, questions) -> REVISAR: a API espera as questões.
+            # Mas generate_and_save_questions já salvou no Postgres.
+            # Se eu enviar pra API de novo, ela vai salvar de novo no Postgres?
+            # Sim, ChallengesService.pushQuestionsToPool salva no banco.
+            
+            # SOLUÇÃO: O question_service no worker salva no Postgres.
+            # A API NestJS deveria ter um endpoint "sync pool from db" ou algo assim.
+            # Mas para não mudar muito a API agora, vou deixar que o NestJS 
+            # busque do DB no próximo getChallenge.
+            
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except Exception:
+            logger.exception("Erro ao processar desafio via RabbitMQ")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     channel.basic_consume(
         queue="challenge_generation",
