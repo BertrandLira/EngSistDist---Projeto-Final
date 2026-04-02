@@ -101,6 +101,50 @@ export class VideosService {
     };
   }
 
+  /**
+   * Retorna a transcrição do vídeo, usando Redis como cache-aside.
+   * Fluxo: Redis hit → retorna imediatamente.
+   *        Redis miss → lê do Postgres → armazena no Redis por 1h → retorna.
+   */
+  async getTranscript(id: string): Promise<string | null> {
+    const cacheKey = `transcript:${id}`;
+    try {
+      const cached = await this.redis.get(cacheKey);
+      if (cached !== null) {
+        this.logger.log(`Transcript cache HIT para video=${id}`);
+        return cached;
+      }
+    } catch (err) {
+      this.logger.warn(`Redis indisponível para leitura de transcript: ${err}`);
+    }
+
+    const record = await this.getRecord(id);
+    const transcript = record.transcript ?? null;
+
+    if (transcript) {
+      try {
+        await this.redis.setex(cacheKey, 3600, transcript);
+        this.logger.log(`Transcript armazenado em cache para video=${id}`);
+      } catch (err) {
+        this.logger.warn(`Redis indisponível para escrita de transcript: ${err}`);
+      }
+    }
+
+    return transcript;
+  }
+
+  /**
+   * Invalida o cache de transcrição de um vídeo (chamado quando o worker atualiza a transcrição).
+   */
+  async invalidateTranscriptCache(id: string): Promise<void> {
+    try {
+      await this.redis.del(`transcript:${id}`);
+      this.logger.log(`Cache de transcript invalidado para video=${id}`);
+    } catch (err) {
+      this.logger.warn(`Falha ao invalidar cache de transcript: ${err}`);
+    }
+  }
+
   absolutePath(record: Video): string {
     return join(this.uploadDir, record.relativePath);
   }

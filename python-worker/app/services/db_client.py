@@ -128,6 +128,20 @@ def insert_ai_question_generation_log(
         conn.close()
 
 
+def get_existing_questions(video_id: str) -> list[str]:
+    """Retorna os prompts de todas as perguntas já geradas para o vídeo (para evitar repetição)."""
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT prompt FROM challenges WHERE video_id = %s::uuid AND source = 'ai' ORDER BY created_at DESC LIMIT 30",
+                (video_id,),
+            )
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_video(video_id: str) -> dict | None:
     """Busca metadados + transcrição de um vídeo."""
     conn = _get_connection()
