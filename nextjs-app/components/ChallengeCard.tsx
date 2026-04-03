@@ -9,12 +9,20 @@ export type Question = {
   answer?: string | null;
 };
 
+const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
+  pool: { label: "Pool IA", color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  vector: { label: "Vetor IA", color: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" },
+  static: { label: "Fallback", color: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+};
+
 export function ChallengeCard({
   questions,
   provider,
+  onNewQuestion,
 }: {
   questions: Question[];
   provider?: string;
+  onNewQuestion?: () => void;
 }) {
   const [current, setCurrent] = useState(0);
   const [selected, setSelected] = useState<Record<number, string>>({});
@@ -25,6 +33,9 @@ export function ChallengeCard({
   const q = questions[current];
   const isRevealed = revealed[current] ?? false;
   const userChoice = selected[current];
+  const total = questions.length;
+
+  const sourceInfo = provider ? SOURCE_LABEL[provider] : null;
 
   const handleSelect = (option: string) => {
     if (isRevealed) return;
@@ -36,32 +47,50 @@ export function ChallengeCard({
   };
 
   const getOptionStyle = (option: string) => {
-    const base =
-      "w-full text-left px-4 py-3 rounded-lg border text-sm font-medium transition-all duration-200 ";
+    const base = "w-full text-left px-4 py-3 rounded-xl border text-sm font-medium transition-all duration-150 flex items-center gap-3 ";
 
     if (!isRevealed) {
       if (userChoice === option) {
-        return base + "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-400 ring-2 ring-blue-200 dark:ring-blue-800";
+        return base + "border-blue-500 bg-blue-50 text-blue-800 dark:bg-blue-950/60 dark:text-blue-200 dark:border-blue-400 shadow-sm";
       }
       return base + "border-zinc-200 dark:border-zinc-700 hover:border-zinc-400 dark:hover:border-zinc-500 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 cursor-pointer";
     }
 
-    // Revealed state
     if (q.answer && option === q.answer) {
-      return base + "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-400";
+      return base + "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-400";
     }
     if (userChoice === option && option !== q.answer) {
-      return base + "border-red-400 bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-300 dark:border-red-500";
+      return base + "border-red-400 bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-200 dark:border-red-500";
     }
-    return base + "border-zinc-200 dark:border-zinc-700 text-zinc-400 dark:text-zinc-600 opacity-60";
+    return base + "border-zinc-100 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600 opacity-50";
+  };
+
+  const getOptionIcon = (option: string, index: number) => {
+    const letter = String.fromCharCode(65 + index);
+    const base = "flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold border ";
+
+    if (!isRevealed) {
+      if (userChoice === option) {
+        return <span className={base + "border-blue-400 bg-blue-100 text-blue-700 dark:border-blue-500 dark:bg-blue-900 dark:text-blue-300"}>{letter}</span>;
+      }
+      return <span className={base + "border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400"}>{letter}</span>;
+    }
+
+    if (q.answer && option === q.answer) {
+      return <span className={base + "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900 dark:text-emerald-300"}>✓</span>;
+    }
+    if (userChoice === option && option !== q.answer) {
+      return <span className={base + "border-red-400 bg-red-100 text-red-600 dark:border-red-500 dark:bg-red-900 dark:text-red-300"}>✗</span>;
+    }
+    return <span className={base + "border-zinc-200 dark:border-zinc-700 text-zinc-400 dark:text-zinc-600"}>{letter}</span>;
   };
 
   return (
-    <div className="mt-4 w-full max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="mt-4 w-full max-w-2xl overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50 px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900/50">
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-zinc-900 text-[11px] font-bold text-white dark:bg-zinc-100 dark:text-zinc-900">
             ?
           </span>
           <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
@@ -69,86 +98,105 @@ export function ChallengeCard({
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {provider && (
-            <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-              {provider}
+          {sourceInfo && (
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${sourceInfo.color}`}>
+              {sourceInfo.label}
             </span>
           )}
-          <span className="text-xs text-zinc-400 dark:text-zinc-500">
-            {current + 1}/{questions.length}
-          </span>
+          {total > 1 && (
+            <span className="text-xs text-zinc-400 dark:text-zinc-500">
+              {current + 1} / {total}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Question */}
-      <p className="mb-4 text-base font-medium leading-relaxed text-zinc-900 dark:text-zinc-50">
-        {q.prompt}
-      </p>
-
-      {/* Options */}
-      {q.options && q.options.length > 0 ? (
-        <div className="mb-4 flex flex-col gap-2">
-          {q.options.map((option, i) => (
-            <button
-              key={i}
-              onClick={() => handleSelect(option)}
-              className={getOptionStyle(option)}
-            >
-              <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-bold opacity-60">
-                {String.fromCharCode(65 + i)}
-              </span>
-              {option}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <p className="mb-4 text-sm italic text-zinc-400 dark:text-zinc-500">
-          Pergunta aberta — reflita sobre sua resposta.
+      <div className="p-5">
+        {/* Question */}
+        <p className="mb-5 text-base font-semibold leading-relaxed text-zinc-900 dark:text-zinc-50">
+          {q.prompt}
         </p>
-      )}
 
-      {/* Actions */}
-      <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          {q.options && userChoice && !isRevealed && (
-            <button
-              onClick={handleReveal}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-            >
-              Confirmar
-            </button>
-          )}
-          {isRevealed && q.answer && (
-            <span
-              className={
+        {/* Options */}
+        {q.options && q.options.length > 0 ? (
+          <div className="mb-5 flex flex-col gap-2">
+            {q.options.map((option, i) => (
+              <button
+                key={i}
+                onClick={() => handleSelect(option)}
+                disabled={isRevealed}
+                className={getOptionStyle(option)}
+              >
+                {getOptionIcon(option, i)}
+                <span>{option}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="mb-5 rounded-lg bg-zinc-50 px-4 py-3 text-sm italic text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+            Pergunta aberta — reflita sobre sua resposta antes de continuar.
+          </p>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {q.options && userChoice && !isRevealed && (
+              <button
+                onClick={handleReveal}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                Confirmar resposta
+              </button>
+            )}
+            {isRevealed && q.answer && (
+              <span className={[
+                "flex items-center gap-1.5 text-sm font-semibold",
                 userChoice === q.answer
-                  ? "text-sm font-medium text-emerald-600 dark:text-emerald-400"
-                  : "text-sm font-medium text-red-500 dark:text-red-400"
-              }
-            >
-              {userChoice === q.answer ? "✓ Correto!" : `✗ Resposta: ${q.answer}`}
-            </span>
-          )}
-        </div>
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-red-500 dark:text-red-400",
+              ].join(" ")}>
+                {userChoice === q.answer ? (
+                  <><span className="text-base">✓</span> Correto!</>
+                ) : (
+                  <><span className="text-base">✗</span> Resposta: {q.answer}</>
+                )}
+              </span>
+            )}
+          </div>
 
-        {/* Navigation */}
-        <div className="flex gap-1">
-          <button
-            onClick={() => setCurrent((c) => Math.max(0, c - 1))}
-            disabled={current === 0}
-            className="rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-          >
-            ←
-          </button>
-          <button
-            onClick={() =>
-              setCurrent((c) => Math.min(questions.length - 1, c + 1))
-            }
-            disabled={current === questions.length - 1}
-            className="rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-          >
-            →
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Nav buttons */}
+            {total > 1 && (
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setCurrent((c) => Math.max(0, c - 1))}
+                  disabled={current === 0}
+                  className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                >
+                  ←
+                </button>
+                <button
+                  onClick={() => setCurrent((c) => Math.min(total - 1, c + 1))}
+                  disabled={current === total - 1}
+                  className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                >
+                  →
+                </button>
+              </div>
+            )}
+
+            {/* Nova pergunta */}
+            {onNewQuestion && (
+              <button
+                onClick={onNewQuestion}
+                className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                title="Gerar nova pergunta"
+              >
+                Nova pergunta
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

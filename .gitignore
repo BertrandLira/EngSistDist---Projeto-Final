@@ -1,3 +1,8 @@
 .env
 .env.local
 .env.*.local
+ROTEIRO_APRESENTACAO.md
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
