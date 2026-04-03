@@ -7,6 +7,10 @@ Ana Gabriela, André Soares, Bertrand Lira, Guilherme Muniz, Felipe Lima, Mateus
 
 ---
 
+## [VideoCast](https://canva.link/59rczuawtuhql7c)
+
+
+
 ## 📋 Visão Geral
 
 Este projeto consiste em um motor de retenção focado em geração de desafios e perguntas sobre conteúdos de vídeos de anunciantes. O diferencial arquitetural é provar que a geração de desafios por Inteligência Artificial pode ser desacoplada do fluxo crítico do usuário. A IA opera em **workers assíncronos**, alimentando um **pool em Redis**; a API NestJS entrega desafios de forma síncrona ao front. Se o pool esgotar ou serviços auxiliares falharem, o sistema recorre a desafios já persistidos no **Postgres** e, por fim, a um **fallback estático** (tabela de perguntas genéricas), garantindo resiliência.
