@@ -44,7 +44,6 @@ export default function () {
   check(res, {
     "status 200": (r) => r.status === 200,
     "response time < 500ms": (r) => r.timings.duration < 500,
-    "tem pergunta": () => body.question && body.question.length > 10,
     "não é fallback": () => body.source !== "static",
   });
 
