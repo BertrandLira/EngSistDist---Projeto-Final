@@ -183,10 +183,46 @@ export class ChallengesService {
   }
 
   private async findUnusedChallenge(videoId: string): Promise<Challenge | null> {
-    return this.challengeRepo.findOne({
+    // Camada 2a: Busca exata por vídeo
+    const exact = await this.challengeRepo.findOne({
       where: { videoId, consumed: false, source: 'ai' },
       order: { createdAt: 'DESC' },
     });
+    if (exact) return exact;
+
+    // Camada 2b: Busca vetorial cross-vídeo (pgvector similarity search)
+    // Usa o embedding de qualquer challenge do vídeo como referência
+    try {
+      const results: Challenge[] = await this.challengeRepo.query(
+        `SELECT c.id, c.video_id as "videoId", c.prompt, c.options, c.answer,
+                c.source, c.consumed, c.created_at as "createdAt"
+         FROM challenges c
+         WHERE c.consumed = false
+           AND c.source = 'ai'
+           AND c.video_id != $1
+           AND c.embedding IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM challenges ref
+             WHERE ref.video_id = $1 AND ref.embedding IS NOT NULL
+           )
+         ORDER BY c.embedding <=> (
+           SELECT ref.embedding FROM challenges ref
+           WHERE ref.video_id = $1 AND ref.embedding IS NOT NULL
+           ORDER BY ref.created_at DESC
+           LIMIT 1
+         )
+         LIMIT 1`,
+        [videoId],
+      );
+      if (results.length > 0) {
+        this.logger.log(`[CB] source=vector-cross video=${videoId} (similaridade pgvector)`);
+        return results[0];
+      }
+    } catch (err) {
+      this.logger.warn(`Busca vetorial cross-vídeo falhou, ignorando: ${err}`);
+    }
+
+    return null;
   }
 
   private async markChallengeConsumed(challengeId: string): Promise<void> {
